@@ -1,0 +1,49 @@
+services:
+  xiaozhi:
+    build: .
+    ports:
+      - "${WEB_BIND_ADDRESS:-127.0.0.1}:${WEB_PORT:-3000}:3000"
+    env_file: .env
+    environment:
+      HOST: 0.0.0.0
+      PORT: 3000
+      DATA_DIR: /app/data
+      MQTT_GATEWAY_URL: http://gateway:3001
+      NOTIFY_AUDIO_DIR: /app/notification-audio
+    volumes:
+      - xiaozhi-data:/app/data
+      - ./notification-audio:/app/notification-audio:ro
+    init: true
+    restart: unless-stopped
+    stop_grace_period: 15s
+  gateway:
+    profiles: [mqtt]
+    build: .
+    command: [node, gateway/server.js]
+    env_file: .env
+    environment:
+      MQTT_BIND_HOST: 0.0.0.0
+      MQTT_UDP_BIND_HOST: 0.0.0.0
+      MQTT_HTTP_BIND_HOST: 0.0.0.0
+      MQTT_HTTP_PORT: 3001
+      MQTT_REGISTRY_URL: http://xiaozhi:3000/internal/mqtt/devices/
+      MQTT_UPSTREAM_URL: ws://xiaozhi:3000/xiaozhi/v1/
+    ports:
+      - "${MQTT_BIND_ADDRESS:-127.0.0.1}:${MQTT_PORT:-8883}:${MQTT_PORT:-8883}/tcp"
+      - "${MQTT_BIND_ADDRESS:-127.0.0.1}:${MQTT_UDP_PORT:-8884}:${MQTT_UDP_PORT:-8884}/udp"
+    volumes:
+      - ./certs:/run/mqtt-tls:ro
+    healthcheck:
+      test: [CMD, node, -e, "fetch('http://127.0.0.1:3001/health').then(r=>process.exit(r.ok?0:1)).catch(()=>process.exit(1))"]
+      interval: 30s
+      timeout: 3s
+      start_period: 10s
+      retries: 3
+    depends_on:
+      xiaozhi:
+        condition: service_healthy
+    init: true
+    restart: unless-stopped
+    stop_grace_period: 15s
+volumes:
+  xiaozhi-data:

@@ -5,7 +5,6 @@ delete process.env.GOOGLE_GENAI_USE_VERTEXAI;
 delete process.env.GOOGLE_CLOUD_PROJECT;
 delete process.env.GOOGLE_CLOUD_LOCATION;
 
-const { GoogleGenAI, Behavior } = require('@google/genai');
 const WebSocket = require('ws');
 const prism = require('prism-media');
 const http = require('http');
@@ -27,6 +26,15 @@ const QwenOmniProvider = require('./providers/qwen_omni');
 const LlamaLiquidAudioServerProvider = require('./providers/llama-liquid-audio-server');
 const LlamaLiquidInterleavedProvider = require('./providers/llama-liquid-interleaved');
 const providersConfig = require('./providers/config');
+const { MemoryStore, TurnBuffer } = require('./lib/memory');
+const { fromEnvironment: notificationsFromEnvironment, validateRpcAdapter } = require('./lib/notifications');
+const { mqttSettings, safeEqual, provisioningUuid, mqttClientId, credentialsFor, createGatewayRpc } = require('./lib/mqtt-integration');
+const { createAudioService } = require('./lib/notification-audio');
+const { parseTrustedProxies } = require('./lib/proxy-config');
+const { parseDeviceTimezoneOffset, deviceServerTime } = require('./lib/device-time');
+const { NotificationInbox } = require('./lib/inbox');
+const { createNotificationIngress, publicError: notificationPublicError } = require('./lib/notification-ingress');
+const { INBOX_TOOLS, INBOX_INSTRUCTION, canUseInboxTools, isInboxToolCall, createInboxTools } = require('./lib/inbox-tools');
 
 // Configuration
 const GEMINI_API_KEY = process.env.GEMINI_API_KEY;
@@ -34,6 +42,7 @@ const DASHSCOPE_API_KEY = process.env.DASHSCOPE_API_KEY;
 const LLM_BACKEND = process.env.LLM_BACKEND || 'gemini'; // 'gemini' or 'qwen'
 const CLIENT_AUTH_TOKEN = process.env.CLIENT_AUTH_TOKEN || 'default_token';
 const PORT = Number(process.env.PORT || 3000);
+const DEVICE_TIMEZONE_OFFSET_MINUTES = parseDeviceTimezoneOffset(process.env.DEVICE_TIMEZONE_OFFSET_MINUTES);
 const HOST = process.env.HOST || '0.0.0.0';
 const GEMINI_MODEL = process.env.GEMINI_MODEL || 'gemini-2.5-flash-native-audio-preview-12-2025';
 const QWEN_MODEL = process.env.QWEN_MODEL || 'qwen3-omni-flash-realtime';
@@ -42,12 +51,16 @@ const QWEN_VOICE = process.env.QWEN_VOICE || 'Cherry';
 const MQTT_ENDPOINT = process.env.MQTT_ENDPOINT || 'mqtt://localhost:1883';
 const WEBSOCKET_URL_FOR_ALLOWED_DEVICE = process.env.WEBSOCKET_URL_FOR_ALLOWED_DEVICE || `ws://localhost:${PORT}/xiaozhi/v1/`;
 const ADMIN_PASSWORD = process.env.ADMIN_PASSWORD || 'admin';
+const ADMIN_PASSWORD_READY = Boolean(process.env.ADMIN_PASSWORD && ADMIN_PASSWORD.length >= 12 && ADMIN_PASSWORD.length <= 512 && !/your_|change.?me|replace.?me|placeholder|example/i.test(ADMIN_PASSWORD));
 const INVALID_TEST_TOKEN = process.env.INVALID_TEST_TOKEN || 'invalid_token';
 
 // Paths
+const DATA_DIR = process.env.DATA_DIR ? path.resolve(process.env.DATA_DIR) : __dirname;
+fs.mkdirSync(DATA_DIR, { recursive: true, mode: 0o700 });
+const BUILTIN_MCP_ID = 'parrot-dashboard';
 const RESTART_FILE_PATH = path.join(__dirname, 'tmp', 'restart.txt');
-const DEVICES_FILE_PATH = path.join(__dirname, 'devices.json');
-const MCP_DEVICES_FILE_PATH = path.join(__dirname, 'mcp_devices.json');
+const DEVICES_FILE_PATH = path.join(DATA_DIR, 'devices.json');
+const MCP_DEVICES_FILE_PATH = path.join(DATA_DIR, 'mcp_devices.json');
 
 // Configure Winston Logger
 const logger = winston.createLogger({
@@ -61,12 +74,12 @@ const logger = winston.createLogger({
   transports: [
     new winston.transports.Console(),
     new DailyRotateFile({
-      filename: path.join(__dirname, 'connection-%DATE%.log'),
+      filename: path.join(DATA_DIR, 'connection-%DATE%.log'),
       datePattern: 'YYYY-MM-DD',
       zippedArchive: true,
       maxSize: '20m',
       maxFiles: '14d',
-      dirname: path.join(__dirname),
+      dirname: DATA_DIR,
     })
   ],
 });
@@ -94,6 +107,19 @@ watcher.on('change', (path) => { logger.info(`Restart file modified: ${path}. Sh
 // Device Management
 let devices = {};
 let mcpDevices = {};
+const activeVoiceSockets = new Map();
+const voiceTeardowns = new Map();
+function hasDedicatedDeviceToken(id) {
+  const token = devices[id]?.token;
+  return typeof token === 'string' && token.length > 0 && token !== CLIENT_AUTH_TOKEN &&
+    !Object.entries(devices).some(([other, device]) => other !== id && device.token === token);
+}
+function closeDeviceSessions(id) {
+  for (const ws of activeVoiceSockets.get(id) || []) {
+    voiceTeardowns.get(ws)?.();
+    ws.close(1000, 'Memory settings changed; reconnect');
+  }
+}
 
 try {
   if (fs.existsSync(DEVICES_FILE_PATH)) {
@@ -132,7 +158,6 @@ function saveMcpDevices() {
   fs.writeFileSync(MCP_DEVICES_FILE_PATH, JSON.stringify(mcpDevices, null, 2));
 }
 
-const BUILTIN_MCP_ID = 'parrot-dashboard';
 const builtinTools = [
   {
     name: "server.get_pending_devices",
@@ -188,7 +213,7 @@ function sendMcpRequest(ws, method, params) {
       requestPayload = { type: 'mcp', payload: requestPayload };
     }
 
-    logger.debug(`[MCP] Sending to ${info?.id || 'unknown'}: ${JSON.stringify(requestPayload)}`);
+    logger.debug(`[MCP] Sending ${method} to ${info?.id || 'unknown'}`);
     ws.send(JSON.stringify(requestPayload));
 
     const timeoutMs = method === 'tools/call' ? 5000 : 30000;
@@ -249,20 +274,8 @@ function setupMcpClient(ws, clientId, isXiaozhi = false) {
   });
 }
 
-const ai = new GoogleGenAI({ apiKey: GEMINI_API_KEY });
 const app = express();
-
-app.use(bodyParser.json());
-app.use(session({
-  store: new FileStore({ path: path.join(__dirname, 'sessions'), logFn: () => {} }),
-  secret: crypto.randomBytes(32).toString('hex'),
-  resave: false,
-  saveUninitialized: true,
-  cookie: { secure: false, maxAge: 24 * 60 * 60 * 1000 } // 24 hours
-}));
-
-// Serve static files for web UI
-app.use(express.static(path.join(__dirname, 'public')));
+app.set('trust proxy', parseTrustedProxies(process.env.TRUST_PROXY));
 
 // Admin Authentication Middleware
 function requireAuth(req, res, next) {
@@ -273,8 +286,261 @@ function requireAuth(req, res, next) {
   }
 }
 
+// Optional memory and notification features are isolated from the realtime audio path.
+function boundedMemorySetting(name, fallback, min, max) {
+  const raw = process.env[name];
+  if (raw === undefined || raw === '') return fallback;
+  const value = Number(raw);
+  if (!/^\d+$/.test(raw) || !Number.isInteger(value) || value < min || value > max) {
+    logger.warn(`${name} is invalid; using conservative default ${fallback}.`);
+    return fallback;
+  }
+  return value;
+}
+const memoryStore = new MemoryStore({
+  databasePath: path.join(DATA_DIR, 'memory.sqlite'),
+  maxFacts: 20,
+  maxContextChars: boundedMemorySetting('MEMORY_CONTEXT_MAX_CHARS', 6000, 256, 24000),
+  maxRecentTurns: boundedMemorySetting('MEMORY_MAX_TURNS', 8, 1, 24),
+  maxTurnChars: boundedMemorySetting('MEMORY_TURN_MAX_CHARS', 1200, 100, 2000)
+});
+const mqttConfig = mqttSettings(process.env);
+let notifications;
+try {
+  let notificationRpc;
+  if (process.env.NOTIFY_ENABLED === 'true' && process.env.NOTIFY_ADAPTER_MODULE) {
+    // Operator-controlled local module only, never a request parameter.
+    notificationRpc = validateRpcAdapter(require(path.resolve(process.env.NOTIFY_ADAPTER_MODULE)));
+  } else if (mqttConfig.configured) {
+    notificationRpc = createGatewayRpc(mqttConfig);
+  }
+  const builtinGateway = !process.env.NOTIFY_ADAPTER_MODULE && mqttConfig.configured;
+  notifications = notificationsFromEnvironment(process.env, {
+    rpc: notificationRpc,
+    transport: builtinGateway ? 'bundled-mqtt-gateway-http' : 'custom-gateway-adapter',
+    resolveDevice: (id) => Object.hasOwn(devices, id) ? devices[id] : null,
+    ...(builtinGateway ? {resolveClientId: (id, device) => device?.transport === 'mqtt' && hasDedicatedDeviceToken(id) ? device.mqtt_client_id : null} : {})
+  });
+} catch {
+  // A broken optional gateway must not interrupt the existing voice server.
+  logger.error('Notification configuration invalid; notifications disabled.');
+  notifications = notificationsFromEnvironment({});
+}
+const notificationAudio = createAudioService({
+  directory: process.env.NOTIFY_AUDIO_DIR || path.join(__dirname, 'notification-audio'),
+  publicBaseUrl: process.env.NOTIFY_AUDIO_BASE_URL || '',
+  signingKey: mqttConfig.serviceKey || '',
+  allowHttp: process.env.NOTIFY_ALLOW_HTTP === 'true'
+});
+const notificationInbox = new NotificationInbox({databasePath:path.join(DATA_DIR,'notifications.sqlite'),retentionDays:30,maxPerDevice:100});
+const inboxToolMaxChars = boundedMemorySetting('INBOX_TOOL_MAX_CHARS',4000,512,6000);
+const notificationIngress = createNotificationIngress({
+  env:process.env,
+  inbox:notificationInbox,
+  resolveDevice:id=>Object.hasOwn(devices,id) && hasDedicatedDeviceToken(id) ? devices[id] : null,
+  beep:async(deviceId, notification, attempt={})=>{
+    try {
+      const asset=await notificationAudio.issue(process.env.NOTIFY_BEEP_ASSET || 'sample-chime.ogg');
+      // Content never enters the beep payload: no TTS, subtitles, or agent execution.
+      const idempotencyKey=attempt.attemptId ? `inbox-retry-${notification.id}-${crypto.createHash('sha256').update(attempt.attemptId).digest('hex').slice(0,32)}` : `inbox-${notification.id}`;
+      return await notifications.send(deviceId,{audio_url:asset.audio_url,idempotencyKey});
+    } catch {return {status:'not_published',reason:'beep_unavailable',playback:'unknown'};}
+  }
+});
+app.use(notificationIngress);
+app.use(bodyParser.json({ limit: '32kb' }));
+app.use(session({
+  store: new FileStore({ path: path.join(DATA_DIR, 'sessions'), logFn: () => {} }),
+  secret: crypto.randomBytes(32).toString('hex'),
+  resave: false,
+  saveUninitialized: false,
+  cookie: { httpOnly: true, sameSite: 'strict', secure: process.env.COOKIE_SECURE === 'true', maxAge: 24 * 60 * 60 * 1000 } // 24 hours
+}));
+
+// Serve static files for web UI
+app.use(express.static(path.join(__dirname, 'public')));
+
+
+const cleanupMemory = async () => {
+  await memoryStore.cleanup().catch(()=>logger.warn('Memory retention cleanup failed.'));
+  await notificationInbox.cleanup().catch(()=>logger.warn('Notification inbox retention cleanup failed.'));
+};
+cleanupMemory();
+const retentionTimer = setInterval(cleanupMemory, 60 * 60 * 1000);
+retentionTimer.unref();
+
+// These endpoints belong to the single authenticated server administrator.
+// JSON + custom header and no CORS permit same-origin dashboard writes only.
+function featureDevice(req, res, next) {
+  res.set('Cache-Control', 'no-store');
+  if (!ADMIN_PASSWORD_READY) {
+    return res.status(503).json({ error: 'Set a unique ADMIN_PASSWORD of at least 12 characters before using memory or notifications' });
+  }
+  if (!Object.hasOwn(devices, req.params.mac) || devices[req.params.mac].status !== 'approved') {
+    return res.status(404).json({ error: 'Approved device not found' });
+  }
+  if (req.path.endsWith('/memory') && req.method === 'PUT' && req.body?.enabled === true && !hasDedicatedDeviceToken(req.params.mac)) {
+    return res.status(409).json({ error: 'Device memory requires a dedicated per-device token; provision it before enabling memory' });
+  }
+  if (req.method !== 'GET' && (!req.is('application/json') || req.get('X-Requested-With') !== 'XiaozhiDashboard')) {
+    return res.status(403).json({ error: 'Same-origin JSON dashboard request required' });
+  }
+  next();
+}
+// Private service-to-service registry: never exposes credentials to dashboard callers.
+app.get('/internal/mqtt/devices/:mac', (req, res) => {
+  res.set('Cache-Control', 'no-store');
+  if (!mqttConfig.configured || !safeEqual(req.get('Authorization'), `Bearer ${mqttConfig.serviceKey}`)) {
+    return res.status(401).json({error:'Unauthorized'});
+  }
+  const id = Object.keys(devices).find(key => key.toLowerCase() === req.params.mac.toLowerCase());
+  const device = id && devices[id];
+  if (!device || device.status !== 'approved' || device.transport !== 'mqtt' ||
+      !hasDedicatedDeviceToken(id) || typeof req.query.client_id !== 'string' ||
+      device.mqtt_client_id !== req.query.client_id || device.mqtt_client_id !== mqttClientId(id, device)) {
+    return res.status(404).json({error:'Approved MQTT device not found'});
+  }
+  res.json({device_id:id, client_id:device.mqtt_client_id, token:device.token});
+});
+app.get('/api/mqtt/status', requireAuth, (req, res) => {
+  res.set('Cache-Control', 'no-store');
+  res.json({enabled:mqttConfig.enabled,configured:mqttConfig.configured,reason:mqttConfig.reason,
+    notifyAllowHttp:process.env.NOTIFY_ALLOW_HTTP==='true',audioConfigured:notificationAudio.configured,
+    notifications:notifications.status(),inbox:notificationIngress.status(),transport:'bundled-mqtt-gateway-http'});
+});
+app.post('/api/devices/:mac/transport', requireAuth, featureDevice, (req, res) => {
+  if (!req.body || Object.keys(req.body).some(key => key !== 'transport') || !['mqtt','websocket'].includes(req.body.transport)) {
+    return res.status(400).json({error:'Choose transport mqtt or websocket'});
+  }
+  const id=req.params.mac, device=devices[id];
+  if(req.body.transport==='mqtt') {
+    if(!mqttConfig.configured) return res.status(503).json({error:mqttConfig.reason || 'MQTT is not configured'});
+    const clientId=mqttClientId(id,device);
+    if(!hasDedicatedDeviceToken(id) || !clientId) return res.status(409).json({error:'MQTT needs a dedicated device token and known device UUID. Reconnect this device over its working WebSocket connection first.'});
+    device.mqtt_client_id=clientId;
+  }
+  device.transport=req.body.transport;
+  saveDevices();
+  closeDeviceSessions(id);
+  res.json({success:true,transport:device.transport,reconnect_required:true});
+});
+function audioAdmin(req,res,next) {
+  res.set('Cache-Control','no-store');
+  if(!ADMIN_PASSWORD_READY) return res.status(503).json({error:'Configure a unique admin password of at least 12 characters'});
+  if(req.method!=='GET' && (!req.is('application/json') || req.get('X-Requested-With')!=='XiaozhiDashboard')) return res.status(403).json({error:'Same-origin JSON dashboard request required'});
+  next();
+}
+app.get('/api/notification-audio',requireAuth,audioAdmin,async(req,res)=>{
+  try {res.json({configured:notificationAudio.configured,reason:notificationAudio.reason,files:await notificationAudio.list()});}
+  catch {res.status(503).json({error:'Notification audio unavailable'});}
+});
+app.post('/api/notification-audio/url',requireAuth,audioAdmin,async(req,res)=>{
+  if(!req.body || Object.keys(req.body).some(key=>key!=='name') || typeof req.body.name!=='string') return res.status(400).json({error:'Choose an audio filename'});
+  try {res.json(await notificationAudio.issue(req.body.name));}
+  catch(error){res.status(error.statusCode||503).json({error:error.message});}
+});
+app.get('/notification-audio/:name',async(req,res)=>{
+  res.set('Cache-Control','private, no-store');
+  res.set('X-Content-Type-Options','nosniff');
+  try {
+    const asset=await notificationAudio.open({name:req.params.name,expires:req.query.expires,signature:req.query.signature});
+    res.set('Content-Type',asset.contentType);res.set('Content-Length',String(asset.size));
+    asset.stream.on('error',()=>res.destroy());
+    res.on('close',()=>asset.stream.destroy());
+    asset.stream.pipe(res);
+  } catch(error){res.status(error.statusCode||404).json({error:'Audio unavailable or link expired'});}
+});
+
+function memoryView(snapshot) {
+  return { enabled: snapshot.enabled, facts: snapshot.facts, turns: snapshot.recentTurns, retentionDays: 30, contextMaxChars: memoryStore.maxContextChars, maxRecentTurns: memoryStore.maxRecentTurns };
+}
+app.post('/api/devices/:mac/inbox', requireAuth, featureDevice, async(req,res)=>{
+  if(!req.body || typeof req.body!=='object' || Array.isArray(req.body) ||
+      Object.keys(req.body).some(key=>!['title','text','idempotency_key'].includes(key))) {
+    return res.status(400).json({stored:false,error:{code:'INVALID_INPUT',message:'Provide title, text and idempotency_key only'}});
+  }
+  try {
+    const result=await notificationIngress.publishAdmin({device_id:req.params.mac,...req.body});
+    res.status(result.duplicate?200:201).json(result);
+  } catch(error) {
+    const result=notificationPublicError(error);
+    if(result.status===429)res.set('Retry-After','60');
+    res.status(result.status).json({stored:result.stored,error:result.error});
+  }
+});
+app.post('/api/devices/:mac/inbox/:id/beep', requireAuth, featureDevice, async(req,res)=>{
+  if(!req.body || typeof req.body!=='object' || Array.isArray(req.body) ||
+      Object.keys(req.body).some(key=>!['confirm','attempt_id'].includes(key)) ||
+      typeof req.body.attempt_id!=='string' || !/^[a-f0-9]{8}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{12}$/i.test(req.body.attempt_id)) {
+    return res.status(400).json({stored:null,error:{code:'INVALID_INPUT',message:'Explicit confirmation and a UUID attempt_id are required'}});
+  }
+  try {
+    res.json(await notificationIngress.retryAdminBeep(req.params.mac,req.params.id,{confirm:req.body.confirm,attemptId:req.body.attempt_id}));
+  } catch(error) {
+    const result=notificationPublicError(error);
+    if(result.status===429)res.set('Retry-After','60');
+    // This operation never creates or deletes a message; failure is about retrying its beep.
+    res.status(result.status).json({stored:null,error:result.error});
+  }
+});
+app.get('/api/devices/:mac/inbox', requireAuth, featureDevice, async(req,res)=>{
+  try {res.json(await notificationInbox.list(req.params.mac,{unreadOnly:req.query.unread_only!=='false',limit:5,...(typeof req.query.cursor==='string'?{cursor:req.query.cursor}:{})}));}
+  catch {res.status(503).json({error:'Notification inbox unavailable'});}
+});
+app.get('/api/devices/:mac/inbox/:id', requireAuth, featureDevice, async(req,res)=>{
+  try {const item=await notificationInbox.get(req.params.mac,req.params.id);if(!item)return res.status(404).json({error:'Notification not found'});res.json(item);}
+  catch {res.status(503).json({error:'Notification inbox unavailable'});}
+});
+app.post('/api/devices/:mac/inbox/:id/read', requireAuth, featureDevice, async(req,res)=>{
+  if(req.body?.confirm!==true)return res.status(400).json({error:'Explicit confirmation required'});
+  try {const item=await notificationInbox.markRead(req.params.mac,req.params.id);if(!item)return res.status(404).json({error:'Notification not found'});res.json(item);}
+  catch {res.status(503).json({error:'Notification inbox unavailable'});}
+});
+app.get('/api/devices/:mac/memory', requireAuth, featureDevice, async (req, res) => {
+  try { res.json(memoryView(await memoryStore.get(req.params.mac))); }
+  catch { res.status(503).json({ error: 'Memory storage unavailable' }); }
+});
+app.put('/api/devices/:mac/memory', requireAuth, featureDevice, async (req, res) => {
+  if (!req.body || typeof req.body !== 'object' || Array.isArray(req.body) ||
+      Object.keys(req.body).some(key => !['enabled', 'facts'].includes(key)) ||
+      typeof req.body.enabled !== 'boolean' || !Array.isArray(req.body.facts)) {
+    return res.status(400).json({ error: 'Provide enabled (boolean) and facts (array)' });
+  }
+  try {
+    const snapshot = await memoryStore.configure(req.params.mac, { enabled: req.body.enabled, facts: req.body.facts });
+    if (!snapshot.enabled) closeDeviceSessions(req.params.mac);
+    res.json(memoryView(snapshot));
+  }
+  catch (error) { res.status(error instanceof TypeError || error instanceof RangeError ? 400 : 503).json({ error: 'Invalid memory settings or storage unavailable' }); }
+});
+app.delete('/api/devices/:mac/memory', requireAuth, featureDevice, async (req, res) => {
+  if (!req.body || req.body.confirm !== req.params.mac) return res.status(400).json({ error: 'Confirm the exact device ID' });
+  try {
+    const snapshot = await memoryStore.clear(req.params.mac);
+    closeDeviceSessions(req.params.mac);
+    res.json(memoryView(snapshot));
+  }
+  catch { res.status(503).json({ error: 'Memory storage unavailable' }); }
+});
+app.post('/api/devices/:mac/notifications', requireAuth, featureDevice, async (req, res) => {
+  if (!req.body || typeof req.body !== 'object' || Array.isArray(req.body) ||
+      Object.keys(req.body).some(key => !['audio_url', 'subtitles', 'idempotency_key', 'expires_at'].includes(key))) {
+    return res.status(400).json({ error: 'Unexpected notification fields' });
+  }
+  try {
+    const result = await notifications.send(req.params.mac, {
+      audio_url: req.body.audio_url, subtitles: req.body.subtitles,
+      idempotencyKey: req.body.idempotency_key, expiresAt: req.body.expires_at
+    });
+    res.json(result);
+  } catch (error) {
+    res.status(error.statusCode || 503).json({ error: error.code || 'Notification unavailable', message: error.message });
+  }
+});
+
 // Web UI API Routes
 app.post('/api/login', (req, res) => {
+  if(!ADMIN_PASSWORD_READY) return res.status(503).json({error:'Configure a unique ADMIN_PASSWORD of at least 12 characters; example placeholders cannot log in'});
   if (req.body.password === ADMIN_PASSWORD) {
     req.session.authenticated = true;
     req.session.save((err) => {
@@ -310,6 +576,7 @@ app.get('/api/devices', requireAuth, (req, res) => {
 app.post('/api/devices/:mac/approve', requireAuth, (req, res) => {
   const mac = req.params.mac;
   if (devices[mac]) {
+    if (devices[mac].purge_pending) return res.status(409).json({error:'Finish device deletion before approving it again'});
     devices[mac].status = 'approved';
     saveDevices();
     res.json({ success: true });
@@ -318,15 +585,23 @@ app.post('/api/devices/:mac/approve', requireAuth, (req, res) => {
   }
 });
 
-app.delete('/api/devices/:mac', requireAuth, (req, res) => {
-  const mac = req.params.mac;
-  if (devices[mac]) {
+app.delete('/api/devices/:mac', requireAuth, async (req, res) => {
+  const mac=req.params.mac;
+  if(!Object.hasOwn(devices,mac))return res.status(404).json({error:'Device not found'});
+  // Revoke first. If erasure fails, retain this retryable tombstone rather than
+  // allowing new publisher writes or accidentally restoring approval.
+  const previous=devices[mac];
+  const revoked={...previous,status:'revoked',purge_pending:true};
+  devices[mac]=revoked;
+  try {saveDevices();}
+  catch {devices[mac]=previous;return res.status(503).json({error:'Could not revoke device'});}
+  closeDeviceSessions(mac);
+  try {
+    await Promise.all([memoryStore.configure(mac,{enabled:false,facts:[]}),notificationInbox.clear(mac)]);
     delete devices[mac];
-    saveDevices();
-    res.json({ success: true });
-  } else {
-    res.status(404).json({ error: 'Device not found' });
-  }
+    try {saveDevices();} catch {devices[mac]=revoked;throw new Error('Device cleanup could not be saved');}
+    res.json({success:true});
+  } catch {res.status(503).json({error:'Device revoked; retry deletion to finish private data cleanup',device_revoked:true});}
 });
 
 app.post('/api/devices/:mac/config', requireAuth, (req, res) => {
@@ -421,12 +696,12 @@ app.all(/^\/xiaozhi\/ota/, (req, res) => {
 
 function handleOta(req, res) {
   logger.info(`[OTA] ${req.method} request from ${req.headers['device-id'] || 'unknown'}`);
-  logger.debug(`[OTA] Request Headers: ${JSON.stringify(req.headers)}`);
+  // Do not log authorization headers or device credentials.
 
   if (req.method === 'POST') {
-    logger.debug(`[OTA] Request Body: ${JSON.stringify(req.body)}`);
+    // OTA bodies can contain identifying metadata; do not log them.
     const macAddress = req.body.mac_address || req.headers['device-id'] || '00:00:00:00:00:00';
-    const uuid = req.body.uuid || 'unknown_uuid';
+    const uuid = req.body.uuid || req.headers['client-id'] || 'unknown_uuid';
     const clientId = req.headers['client-id'] || crypto.randomUUID();
     const protocol = req.headers['x-forwarded-proto'] || 'http';
     const wsProtocol = protocol === 'https' ? 'wss' : 'ws';
@@ -434,7 +709,7 @@ function handleOta(req, res) {
     // Check device registration
     let isAllowed = false;
     if (devices[macAddress]) {
-      if (devices[macAddress].status === 'approved' && devices[macAddress].uuid === uuid) {
+      if (devices[macAddress].status === 'approved' && (devices[macAddress].uuid === uuid || (typeof devices[macAddress].mqtt_uuid === 'string' && devices[macAddress].mqtt_uuid === req.headers['client-id']) || (devices[macAddress].uuid === 'unknown_uuid' && !req.body.uuid && devices[macAddress].transport !== 'mqtt'))) {
         isAllowed = true;
       }
     } else {
@@ -464,12 +739,19 @@ function handleOta(req, res) {
       logger.info(`[OTA] Allowed device ${macAddress} requested OTA. Returning valid token.`);
       response = {
         timestamp: new Date().toISOString(),
-        websocket: {
-          url: WEBSOCKET_URL_FOR_ALLOWED_DEVICE,
-          token: devices[macAddress].token || CLIENT_AUTH_TOKEN
-        },
-        server_time: { timestamp: Date.now(), timezone_offset: 28800 }
+        server_time: deviceServerTime(DEVICE_TIMEZONE_OFFSET_MINUTES)
       };
+      const device=devices[macAddress];
+      if(device.transport==='mqtt') {
+        const suppliedUuid=req.headers['client-id'] || uuid;
+        if(!mqttConfig.configured || !hasDedicatedDeviceToken(macAddress) || suppliedUuid!==provisioningUuid(device)) {
+          return res.status(503).json({error:'MQTT provisioning unavailable; choose WebSocket in dashboard to restore previous transport'});
+        }
+        try {response.mqtt=credentialsFor(macAddress,device,mqttConfig);}
+        catch {return res.status(503).json({error:'MQTT identity unavailable'});}
+      } else {
+        response.websocket={url:WEBSOCKET_URL_FOR_ALLOWED_DEVICE,token:device.token||CLIENT_AUTH_TOKEN};
+      }
     } else {
       logger.warn(`[OTA] Pending/Unapproved device ${macAddress} requested OTA.`);
       response = {
@@ -486,12 +768,12 @@ function handleOta(req, res) {
           url: `${wsProtocol}://${req.headers.host}/`,
           token: INVALID_TEST_TOKEN
         },
-        server_time: { timestamp: Date.now(), timezone_offset: 3600 },
+        server_time: deviceServerTime(DEVICE_TIMEZONE_OFFSET_MINUTES),
         firmware: { version: "1.0.0", url: "" },
         activation: { code: "123456", message: "Parrot Relay\nWaiting for Approval", challenge: crypto.randomUUID() }
       };
     }
-    logger.debug(`[OTA] Response Payload: ${JSON.stringify(response)}`);
+    // OTA response includes credentials; never log the payload.
     res.json(response);
   } else {
     const responsePayload = { status: "ok", message: "Parrot Relay OTA endpoint", timestamp: new Date().toISOString() };
@@ -572,7 +854,7 @@ wssMcp.on('connection', (ws, req) => {
   ws.on('message', (message) => {
     try {
       const data = JSON.parse(message.toString());
-      logger.debug(`[MCP] Received from ${clientId}: ${JSON.stringify(data)}`); // Added debug log
+      logger.debug(`[MCP] Message received from ${clientId}`);
 
       let mcpId = data.id;
       if (mcpId !== undefined && typeof mcpId === 'string' && !isNaN(Number(mcpId))) {
@@ -613,7 +895,7 @@ wssXiaozhi.on('connection', (ws, req) => {
   const macAddress = req.headers['device-id'] || 'unknown';
   let deviceConfig = devices[macAddress];
   
-  if (!deviceConfig) {
+  if (!deviceConfig || deviceConfig.status !== 'approved') {
     logger.warn(`[${sessionId}] Authentication failed. Device ${macAddress} not registered.`);
     ws.close(1008, 'Unauthorized');
     return;
@@ -622,9 +904,16 @@ wssXiaozhi.on('connection', (ws, req) => {
   const expectedToken = deviceConfig.token || CLIENT_AUTH_TOKEN;
 
   if (token !== expectedToken) {
-    logger.warn(`[${sessionId}] Authentication failed. Expected '${expectedToken}'`);
+    logger.warn(`[${sessionId}] Authentication failed.`);
     ws.close(1008, 'Unauthorized');
     return;
+  }
+
+  const authenticatedClientId=req.headers['client-id'];
+  if(!provisioningUuid(deviceConfig) && hasDedicatedDeviceToken(macAddress) &&
+      typeof authenticatedClientId==='string' && /^[A-Za-z0-9_-]{8,128}$/.test(authenticatedClientId)) {
+    deviceConfig.mqtt_uuid=authenticatedClientId;
+    saveDevices();
   }
 
   // Ensure default config fallback
@@ -636,8 +925,14 @@ wssXiaozhi.on('connection', (ws, req) => {
   };
 
   logger.info(`[${sessionId}] Authenticated successfully. Device: ${macAddress}`);
+  if (!activeVoiceSockets.has(macAddress)) activeVoiceSockets.set(macAddress, new Set());
+  activeVoiceSockets.get(macAddress).add(ws);
 
   let provider = null;
+  let connectingProvider = null;
+  let sessionStarting = false;
+  let sessionClosed = false;
+  let memoryTurns = null;
   let isSpeaking = false;
   let modelDone = false;
   let audioBuffer = [];
@@ -691,7 +986,7 @@ wssXiaozhi.on('connection', (ws, req) => {
         if (ttsTextQueue.length > 0 && now - lastTtsTime >= currentTtsDelay) {
           const textToSend = ttsTextQueue.shift();
           const payload = { type: 'tts', state: 'sentence_start', session_id: sessionId, text: textToSend };
-          logger.debug(`[${sessionId}] Sending to Xiaozhi: ${JSON.stringify(payload)}`);
+          logger.debug(`[${sessionId}] Sending Xiaozhi ${payload.type} ${payload.state || ''}`);
           if (ws.readyState === WebSocket.OPEN) ws.send(JSON.stringify(payload));
           lastTtsTime = now;
 
@@ -711,7 +1006,7 @@ wssXiaozhi.on('connection', (ws, req) => {
           if (isSpeaking) {
             isSpeaking = false;
             const payload = { type: 'tts', state: 'stop', session_id: sessionId };
-            logger.debug(`[${sessionId}] Sending to Xiaozhi: ${JSON.stringify(payload)}`);
+            logger.debug(`[${sessionId}] Sending Xiaozhi ${payload.type} ${payload.state || ''}`);
             if (ws.readyState === WebSocket.OPEN) ws.send(JSON.stringify(payload));
           }
           clearInterval(audioSendInterval);
@@ -723,6 +1018,8 @@ wssXiaozhi.on('connection', (ws, req) => {
   }
 
   async function startSession() {
+    if (sessionStarting || provider || sessionClosed) return;
+    sessionStarting = true;
     try {
       // Gather tools from approved and enabled MCP clients
       const toolsMap = new Map();
@@ -757,13 +1054,33 @@ wssXiaozhi.on('connection', (ws, req) => {
         }
       }
 
+      const sessionBackend=deviceConfig.llm_backend || LLM_BACKEND;
+      if(canUseInboxTools(sessionBackend,hasDedicatedDeviceToken(macAddress))) {
+        for(const tool of INBOX_TOOLS) toolsMap.set(tool.name,tool);
+      }
       const mcpTools = Array.from(toolsMap.values());
       const activeBackend = deviceConfig.llm_backend || LLM_BACKEND;
       
       let config = { ...deviceConfig };
       config.prompt = deviceConfig.prompt;
+      if(canUseInboxTools(activeBackend,hasDedicatedDeviceToken(macAddress))) config.prompt=(config.prompt || 'You are a helpful assistant. Keep responses short.')+'\n'+INBOX_INSTRUCTION;
       config.input_transcription = deviceConfig.input_transcription;
       config.output_transcription = deviceConfig.output_transcription;
+      // Memory reads occur only before session setup, never on audio chunks.
+      if (activeBackend === 'gemini' && hasDedicatedDeviceToken(macAddress)) {
+        try {
+          const snapshot = await memoryStore.get(macAddress);
+          if (snapshot.enabled) {
+            config.prompt = (config.prompt || 'You are a helpful assistant. Keep responses short.') + '\n' + memoryStore.context(snapshot);
+            config.input_transcription = true;
+            config.output_transcription = true;
+            memoryTurns = new TurnBuffer({ store: memoryStore, deviceId: macAddress, epoch: snapshot.epoch });
+          }
+        } catch (error) {
+          logger.warn(`[${sessionId}] Memory unavailable; starting without saved context.`);
+        }
+      }
+      if (sessionClosed) return;
 
       let newProvider;
       const providerConfigDef = providersConfig.find(p => p.id === activeBackend);
@@ -816,6 +1133,7 @@ wssXiaozhi.on('connection', (ws, req) => {
           return;
       }
 
+      connectingProvider = newProvider;
       newProvider.on('listen_stop', () => {
           if (ws.readyState === WebSocket.OPEN) {
               ws.send(JSON.stringify({ type: 'listen', state: 'stop', session_id: sessionId }));
@@ -823,6 +1141,7 @@ wssXiaozhi.on('connection', (ws, req) => {
       });
 
       newProvider.on('connected', () => {
+          if (sessionClosed) { newProvider.close(); return; }
           logger.info(`[${sessionId}] Connected to ${activeBackend} API`);
           if (ws.readyState === WebSocket.OPEN) {
               const payload = { type: 'listen', state: 'start', session_id: sessionId };
@@ -840,6 +1159,7 @@ wssXiaozhi.on('connection', (ws, req) => {
       });
 
       newProvider.on('audio_output', (audioBuf) => {
+          if (sessionClosed) return;
           if (!isSpeaking) {
               isSpeaking = true;
               ws.send(JSON.stringify({ type: 'tts', state: 'start', session_id: sessionId }));
@@ -848,10 +1168,15 @@ wssXiaozhi.on('connection', (ws, req) => {
       });
 
       newProvider.on('input_transcription', (text) => {
-          ws.send(JSON.stringify({ type: 'stt', session_id: sessionId, text }));
+          if (sessionClosed) return;
+          memoryTurns?.addInput(text);
+          if (deviceConfig.input_transcription && ws.readyState === WebSocket.OPEN) ws.send(JSON.stringify({ type: 'stt', session_id: sessionId, text }));
       });
 
       newProvider.on('output_transcription', (text) => {
+          if (sessionClosed) return;
+          memoryTurns?.addOutput(text);
+          if (!deviceConfig.output_transcription) return;
           outputTranscriptionBuffer += text;
           let match;
           while ((match = outputTranscriptionBuffer.match(/.*?([。！？.!?\n]+)/))) {
@@ -866,6 +1191,8 @@ wssXiaozhi.on('connection', (ws, req) => {
       });
 
       newProvider.on('turn_complete', () => {
+          if (sessionClosed) return;
+          if (memoryTurns) memoryTurns.complete().catch(() => logger.warn(`[${sessionId}] Memory write failed.`));
           if (outputTranscriptionBuffer.length > 0 && deviceConfig.output_transcription) {
               queueTtsText(outputTranscriptionBuffer);
               outputTranscriptionBuffer = '';
@@ -874,6 +1201,9 @@ wssXiaozhi.on('connection', (ws, req) => {
       });
 
       newProvider.on('interrupted', () => {
+          if (sessionClosed) return;
+          memoryTurns?.discard();
+          outputTranscriptionBuffer = '';
           if (ws.readyState === WebSocket.OPEN) {
               ws.send(JSON.stringify({ type: 'abort', session_id: sessionId, reason: 'interrupted' }));
               if (isSpeaking) {
@@ -887,6 +1217,16 @@ wssXiaozhi.on('connection', (ws, req) => {
       });
 
       newProvider.on('tool_call', (callId, name, args) => {
+          if (sessionClosed) return;
+          if(isInboxToolCall(name,activeBackend,hasDedicatedDeviceToken(macAddress))) {
+            const run=createInboxTools({inbox:notificationInbox,deviceId:macAddress,maxChars:inboxToolMaxChars});
+            run(name,args).then(result=>{
+              if(!sessionClosed) newProvider.sendToolResponse(callId,name,JSON.stringify(result));
+            }).catch(()=>{
+              if(!sessionClosed) newProvider.sendToolResponse(callId,name,JSON.stringify({error:'Notification request invalid or inbox unavailable'}));
+            });
+            return;
+          }
           logger.info(`[${sessionId}] Provider requested tool call: ${name}`);
 
           if (name === 'server.get_pending_devices') {
@@ -902,7 +1242,7 @@ wssXiaozhi.on('connection', (ws, req) => {
           }
 
           if (name === 'server.approve_device') {
-              if (args.type === 'xiaozhi' && devices[args.id]) {
+              if (args.type === 'xiaozhi' && devices[args.id] && !devices[args.id].purge_pending) {
                   devices[args.id].status = 'approved';
                   saveDevices();
                   if (provider) provider.sendToolResponse(callId, name, JSON.stringify({ success: true, note: `Xiaozhi device ${args.id} approved.` }));
@@ -1005,31 +1345,37 @@ wssXiaozhi.on('connection', (ws, req) => {
       });
 
       newProvider.on('error', (err) => {
+          if (sessionClosed) return;
           logger.error(`[${sessionId}] Provider error:`, err);
           ws.send(JSON.stringify({ type: 'error', session_id: sessionId, data: err.message }));
       });
 
       newProvider.on('close', () => {
+          memoryTurns?.discard();
           logger.info(`[${sessionId}] Provider session closed`);
           provider = null;
       });
 
       logger.info(`[${sessionId}] Starting ${activeBackend} session with ${mcpTools.length} tools.`);
       await newProvider.connect(mcpTools);
+      if (sessionClosed) newProvider.close();
       
     } catch (err) {
       logger.error(`[${sessionId}] Failed to connect:`, err);
       ws.close();
+    } finally {
+      sessionStarting = false;
     }
   }
 
   ws.on('message', (message, isBinary) => {
+    if (sessionClosed) return;
     if (isBinary) {
       decoder.write(message);
     } else {
       try {
         const data = JSON.parse(message.toString());
-        logger.debug(`[${sessionId}] Received from Xiaozhi: ${JSON.stringify(data)}`);
+        logger.debug(`[${sessionId}] Received Xiaozhi ${data.type || 'message'}`);
 
         // Handle MCP JSON-RPC responses (can be top-level or wrapped in a Xiaozhi message)
         const possibleMcpData = data.payload || data;
@@ -1052,7 +1398,7 @@ wssXiaozhi.on('connection', (ws, req) => {
             session_id: sessionId,
             audio_params: { format: 'opus', sample_rate: 24000, channels: 1, frame_duration: 60 }
           };
-          logger.debug(`[${sessionId}] Sending to Xiaozhi: ${JSON.stringify(payload)}`);
+          logger.debug(`[${sessionId}] Sending Xiaozhi ${payload.type} ${payload.state || ''}`);
           ws.send(JSON.stringify(payload));
 
           if (data.features && data.features.mcp) {
@@ -1100,6 +1446,8 @@ wssXiaozhi.on('connection', (ws, req) => {
         } else if (data.type === 'listen' && data.state === 'start' && !provider) {
           // You can also start gemini session strictly when client sends listen: start
         } else if (data.type === 'abort') {
+          memoryTurns?.discard();
+          outputTranscriptionBuffer = '';
           logger.info(`[${sessionId}] Received abort from device. Clearing queues.`);
           if (provider && typeof provider.interrupt === 'function') {
             provider.interrupt();
@@ -1118,12 +1466,31 @@ wssXiaozhi.on('connection', (ws, req) => {
     }
   });
 
-  ws.on('close', () => {
-    logger.info(`[${sessionId}] Client disconnected`);
-    mcpClients.delete(ws);
+  function invalidateVoiceSession() {
+    if (sessionClosed) return;
+    // Clear/disable invalidates immediately, before the websocket close handshake.
+    sessionClosed = true;
+    memoryTurns?.close();
+    (provider || connectingProvider)?.close();
+    provider = null;
+    connectingProvider = null;
+    audioBuffer = [];
+    audioOutputQueue = [];
+    ttsTextQueue = [];
+    outputTranscriptionBuffer = '';
+    if (audioSendInterval) clearInterval(audioSendInterval);
+    audioSendInterval = null;
     decoder.destroy();
     encoder.destroy();
-    if (audioSendInterval) clearInterval(audioSendInterval);
+  }
+  voiceTeardowns.set(ws, invalidateVoiceSession);
+  ws.on('close', () => {
+    invalidateVoiceSession();
+    voiceTeardowns.delete(ws);
+    activeVoiceSockets.get(macAddress)?.delete(ws);
+    if (!activeVoiceSockets.get(macAddress)?.size) activeVoiceSockets.delete(macAddress);
+    logger.info(`[${sessionId}] Client disconnected`);
+    mcpClients.delete(ws);
   });
 
   // startGeminiSession(); // Removed immediate start
@@ -1134,3 +1501,24 @@ server.listen(PORT, HOST, () => {
   logger.info(`Web UI: http://${HOST === '0.0.0.0' ? 'localhost' : HOST}:${PORT}/`);
   logger.info(`MCP Endpoint: ws://${HOST === '0.0.0.0' ? 'localhost' : HOST}:${PORT}/mcp`);
 });
+
+// Drain completed memory writes; incomplete turns are intentionally discarded.
+let shuttingDown = false;
+async function shutdown() {
+  if (shuttingDown) return;
+  shuttingDown = true;
+  clearInterval(retentionTimer);
+  const deadline = setTimeout(() => process.exit(1), 10000);
+  deadline.unref();
+  server.close();
+  for (const ws of wssXiaozhi.clients) { voiceTeardowns.get(ws)?.(); ws.terminate(); }
+  for (const ws of wssMcp.clients) ws.terminate();
+  await watcher.close();
+  try { await Promise.all([memoryStore.close(),notificationInbox.close()]); }
+  catch { logger.error('Failed to flush memory during shutdown.'); process.exitCode = 1; }
+  logger.end();
+  clearTimeout(deadline);
+  process.exit(process.exitCode || 0);
+}
+process.on('SIGTERM', shutdown);
+process.on('SIGINT', shutdown);

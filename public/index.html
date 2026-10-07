@@ -38,6 +38,36 @@
         .modal-footer { margin-top: 20px; display: flex; justify-content: flex-end; gap: 10px; }
         .checkbox-group { margin-bottom: 10px; display: flex; align-items: center; gap: 8px; }
         .checkbox-group input { width: auto; }
+        button:disabled { opacity: 0.55; cursor: not-allowed; }
+        .memory-notify-modal { max-width: 680px; box-sizing: border-box; }
+        .memory-notify-modal section + section { margin-top: 24px; border-top: 1px solid #ddd; padding-top: 20px; }
+        .memory-notify-modal h4 { margin-bottom: 8px; }
+        .memory-notify-modal fieldset { border: 0; margin: 0; padding: 0; min-width: 0; }
+        .memory-notify-modal select, .memory-notify-modal input[type="url"] { width: 100%; padding: 10px; border: 1px solid #ccc; border-radius: 4px; box-sizing: border-box; }
+        .memory-notify-modal .checkbox-group label { font-weight: normal; }
+        .memory-notify-modal p { line-height: 1.45; }
+        .help-text { color: #555; font-size: 13px; }
+        .scope-warning { background: #fff5d6; padding: 12px; border-radius: 4px; }
+        .feature-status { min-height: 1.4em; overflow-wrap: anywhere; }
+        .feature-status[data-tone="error"] { color: #a71927; }
+        .feature-status[data-tone="success"] { color: #18602b; }
+        .feature-status[data-tone="warning"] { color: #805500; }
+        .memory-turns { max-height: 260px; overflow-y: auto; padding-left: 24px; }
+        .memory-turns li { border-bottom: 1px solid #ddd; padding: 8px 0; }
+        .memory-turns p { white-space: pre-wrap; overflow-wrap: anywhere; margin: 6px 0; }
+        .memory-turns time { color: #666; font-size: 12px; }
+        .memory-actions { display: flex; flex-wrap: wrap; gap: 8px; margin-top: 12px; }
+        .memory-delete { margin-top: 18px; padding: 12px; border: 1px solid #efbdc1; border-radius: 4px; }
+        .inbox-list { list-style: none; padding: 0; margin: 12px 0; }
+        .inbox-list li { border: 1px solid #ddd; border-radius: 4px; padding: 12px; margin-bottom: 8px; }
+        .inbox-list p { margin: 6px 0; white-space: pre-wrap; overflow-wrap: anywhere; }
+        .inbox-list button { text-align: left; max-width: 100%; overflow-wrap: anywhere; }
+        .inbox-detail { border: 1px solid #aac7e4; border-radius: 4px; padding: 12px; margin-top: 16px; }
+        .inbox-detail h5 { margin: 0 0 8px; font-size: 15px; overflow-wrap: anywhere; }
+        #inboxDetailText { white-space: pre-wrap; overflow-wrap: anywhere; }
+        #inboxDetailMeta, #inboxMessageRequestId { overflow-wrap: anywhere; }
+        #memoryFacts { height: 140px; }
+        #memoryDeviceDisplay { overflow-wrap: anywhere; }
         
         pre { background: #f8f9fa; padding: 10px; border-radius: 4px; overflow-x: auto; font-size: 13px; }
     </style>
@@ -152,6 +182,158 @@
     </div>
 </div>
 
+<!-- Memory and notifications have their own state; the existing config modal is unchanged. -->
+<div class="modal-overlay hidden" id="memoryNotifyModal">
+    <div class="modal memory-notify-modal" role="dialog" aria-modal="true" aria-labelledby="memoryNotifyTitle" aria-describedby="memoryScopeWarning" tabindex="-1">
+        <h3 id="memoryNotifyTitle">Memory &amp; Notify</h3>
+        <p id="memoryDeviceDisplay" style="font-weight: bold;"></p>
+        <p class="scope-warning" id="memoryScopeWarning">Memory is off by default. Memory belongs to this device and is shared by everyone who uses it. It does not identify individual speakers. Only enable it when everyone using this device agrees.</p>
+
+        <section aria-labelledby="transportSectionTitle">
+            <h4 id="transportSectionTitle">Device connection</h4>
+            <p class="help-text">WebSocket is the default and keeps the existing voice setup. MQTT enables persistent control for notifications. Saving a transport closes the current voice connection and changes the next OTA configuration; reboot the device or make it fetch OTA again to use it. This panel does not reboot or flash your device.</p>
+            <fieldset id="transportFields" disabled>
+                <div class="form-group">
+                    <label for="deviceTransport">Connection transport</label>
+                    <select id="deviceTransport">
+                        <option value="websocket">WebSocket (default)</option>
+                        <option value="mqtt" id="mqttTransportOption">MQTT gateway</option>
+                    </select>
+                </div>
+                <button type="button" id="saveTransportButton">Save transport</button>
+            </fieldset>
+            <div class="memory-actions"><button type="button" id="refreshNotificationSetupButton">Refresh connection setup</button></div>
+            <p id="mqttSetupStatus" class="feature-status" role="status" aria-live="polite"></p>
+            <p id="transportStatus" class="feature-status" role="status" aria-live="polite"></p>
+        </section>
+
+        <section aria-labelledby="memorySectionTitle">
+            <h4 id="memorySectionTitle">Device memory</h4>
+            <p class="help-text">Enabling memory stores completed Gemini conversation turns and uses saved facts and recent turns on the next Gemini connection. Transcripts are enabled for storage independently of the device’s display preferences. Turning memory off and saving clears stored facts and turns and closes the current voice connection to remove loaded context. The device must reconnect.</p>
+            <p class="help-text" id="memoryRetention"></p>
+            <p class="help-text" id="memoryContextLimit"></p>
+            <fieldset id="memoryFields" disabled>
+                <div class="checkbox-group">
+                    <input type="checkbox" id="memoryEnabled">
+                    <label for="memoryEnabled">Enable shared memory for this device</label>
+                </div>
+                <div class="form-group">
+                    <label for="memoryFacts">Explicit facts</label>
+                    <textarea id="memoryFacts" maxlength="10019" aria-describedby="memoryFactsHelp" placeholder="One fact per line"></textarea>
+                    <p id="memoryFactsHelp" class="help-text">One fact per line, up to 20 facts and 500 characters per fact. These are explicitly saved facts, not automatically inferred claims. Changes take effect only after Save memory.</p>
+                </div>
+                <button type="button" id="saveMemoryButton">Save memory</button>
+            </fieldset>
+            <div class="memory-actions">
+                <button type="button" id="refreshMemoryButton">Refresh memory</button>
+            </div>
+            <p id="memoryStatus" class="feature-status" role="status" aria-live="polite"></p>
+
+            <h4>Recent turns (read-only)</h4>
+            <p class="help-text">Most recent 20 stored turns. Voice-only or interrupted responses may have no complete text to save.</p>
+            <ol id="memoryTurns" class="memory-turns"></ol>
+            <p id="memoryTurnsEmpty" class="help-text">Loading recent turns…</p>
+
+            <div class="memory-delete">
+                <h4>Forget memory</h4>
+                <p class="help-text">Permanently delete this device’s stored facts and recent turns and close its current voice connection to remove loaded context. This cannot be undone. The device must reconnect. The enabled setting stays unchanged; an enabled device can save new turns on its next Gemini connection. Type the device address exactly to confirm.</p>
+                <label for="forgetMemoryConfirm">Device address</label>
+                <input type="text" id="forgetMemoryConfirm" autocomplete="off" spellcheck="false" disabled>
+                <div class="memory-actions">
+                    <button type="button" id="forgetMemoryButton" class="btn-delete" disabled>Forget memory</button>
+                </div>
+            </div>
+        </section>
+
+        <section aria-labelledby="inboxSectionTitle">
+            <h4 id="inboxSectionTitle">Notification inbox</h4>
+            <p class="help-text">Saved messages remain here when the device is offline. Opening a message does not mark it read. Message content is not automatically spoken or sent as subtitles; only a short configured beep is requested. Publication does not confirm playback.</p>
+            <div class="memory-actions">
+                <label for="inboxFilter">Show</label>
+                <select id="inboxFilter" style="width: auto;">
+                    <option value="all">All messages</option>
+                    <option value="unread">Unread only</option>
+                </select>
+                <button type="button" id="refreshInboxButton">Refresh inbox</button>
+            </div>
+            <p id="inboxCounts" class="help-text"></p>
+            <p id="inboxStatus" class="feature-status" role="status" aria-live="polite"></p>
+            <ul id="inboxList" class="inbox-list"></ul>
+            <div class="memory-actions" aria-label="Inbox pages">
+                <button type="button" id="inboxPreviousButton" disabled>Previous page</button>
+                <span id="inboxPageLabel">Page 1</span>
+                <button type="button" id="inboxNextButton" disabled>Next page</button>
+            </div>
+            <div id="inboxDetail" class="inbox-detail hidden" aria-labelledby="inboxDetailTitle">
+                <h5 id="inboxDetailTitle">Message</h5>
+                <p id="inboxDetailMeta" class="help-text"></p>
+                <p id="inboxDetailText"></p>
+                <p id="inboxDetailStatus" class="feature-status" role="status" aria-live="polite"></p>
+                <p id="inboxDetailBeepStatus" class="feature-status" role="status" aria-live="polite"></p>
+                <div class="memory-actions">
+                    <button type="button" id="markInboxReadButton" disabled>Mark read</button>
+                    <button type="button" id="retryInboxBeepButton" disabled>Retry beep only</button>
+                    <button type="button" id="closeInboxDetailButton">Close message</button>
+                </div>
+            </div>
+
+            <h4>Test message &amp; beep</h4>
+            <p class="help-text">Use your existing admin login to test the complete flow. No Hermes or external sender token is needed. The message is saved first; the beep may be unavailable when notifications are disabled or the device is offline, busy, or using WebSocket. Retry the beep from the saved message without creating another message.</p>
+            <div class="form-group">
+                <label for="inboxMessageTitle">Title (optional, up to 120 characters)</label>
+                <input type="text" id="inboxMessageTitle" maxlength="120" autocomplete="off">
+            </div>
+            <div class="form-group">
+                <label for="inboxMessageText">Message (up to 2,000 characters)</label>
+                <textarea id="inboxMessageText" maxlength="2000"></textarea>
+            </div>
+            <div class="memory-actions">
+                <button type="button" id="saveInboxMessageButton">Save message &amp; beep</button>
+                <button type="button" id="newInboxMessageButton" class="hidden">Start a new message</button>
+            </div>
+            <p id="inboxStorageStatus" class="feature-status" role="status" aria-live="polite"></p>
+            <p id="inboxBeepStatus" class="feature-status" role="status" aria-live="polite"></p>
+            <p id="inboxMessageRequestId" class="help-text"></p>
+            <p class="help-text" id="serverConfigurationNote">Sender permissions, secrets, retention, and numeric memory/inbox limits are configured server-side. This dashboard does not display or edit secrets.</p>
+        </section>
+
+        <section aria-labelledby="notificationSectionTitle">
+            <h4 id="notificationSectionTitle">Audio-only test (no inbox message)</h4>
+            <p class="help-text">This separate test plays prerecorded audio and optional subtitles. It does not save an inbox message.</p>
+            <p class="help-text" id="notificationUrlHelp">Use a local recording below, or a direct HTTPS URL on an operator-approved audio origin (NOTIFY_ALLOWED_AUDIO_ORIGINS). External audio must return a 2xx response with mono Ogg Opus audio. The device downloads it; the dashboard and relay never fetch an external URL.</p>
+            <p class="help-text">Notifications are disabled until the MQTT gateway is enabled and configured and this device is explicitly set to MQTT. After saving MQTT, reboot/fetch OTA and connect the device. It must be online and idle; stock firmware can ignore a request while busy. There is no offline queue. A published result confirms publication only; playback and whether anyone heard it remain unknown.</p>
+            <div class="form-group">
+                <label for="notificationAudioAsset">Local prerecorded audio</label>
+                <select id="notificationAudioAsset" disabled><option value="">Select a recording</option></select>
+                <div class="memory-actions"><button type="button" id="useLocalAudioButton" disabled>Use local audio</button></div>
+                <p class="help-text">The bundled sample-chime.ogg is a one-second test tone with no speech. Using a recording creates a five-minute download link; it does not send a notification or synthesize speech.</p>
+                <p id="notificationAudioStatus" class="feature-status" role="status" aria-live="polite"></p>
+            </div>
+            <fieldset id="notificationFields" disabled>
+                <div class="form-group">
+                    <label for="notificationAudioUrl">Audio URL</label>
+                    <input type="url" id="notificationAudioUrl" maxlength="2048" placeholder="https://example.com/notification.ogg" autocomplete="off" spellcheck="false">
+                </div>
+                <div class="form-group">
+                    <label for="notificationSubtitle">Subtitle (optional, starts at 0 ms; maximum 512 UTF-8 bytes)</label>
+                    <textarea id="notificationSubtitle" maxlength="512"></textarea>
+                </div>
+                <div class="memory-actions">
+                    <button type="button" id="sendNotificationButton">Send notification</button>
+                    <button type="button" id="newNotificationButton" class="hidden">Start another notification</button>
+                </div>
+            </fieldset>
+            <p id="notificationStatus" class="feature-status" role="status" aria-live="polite"></p>
+            <p id="notificationRequestId" class="help-text"></p>
+        </section>
+
+        <p class="help-text">Closing this window stops waiting for a response. A request already submitted may still complete; reopen to refresh stored memory and the inbox. Pending message and beep retry IDs are kept while this page stays open; check the inbox before sending after a page reload.</p>
+        <div class="modal-footer">
+            <button type="button" id="closeMemoryNotifyButton" style="background: #6c757d;">Close</button>
+        </div>
+    </div>
+</div>
+
 <script>
     let currentDevices = {};
     let currentMcpDevices = {};
@@ -165,6 +347,10 @@
             document.getElementById('dashboardView').classList.remove('hidden');
             loadData();
         } else {
+            closeMemoryNotifyModal();
+            notificationAttempts.clear();
+            inboxMessageAttempts.clear();
+            inboxBeepAttempts.clear();
             document.getElementById('loginView').classList.remove('hidden');
             document.getElementById('dashboardView').classList.add('hidden');
         }
@@ -182,11 +368,19 @@
             document.getElementById('password').value = '';
             checkAuth();
         } else {
-            document.getElementById('loginError').style.display = 'block';
+            let data;
+            try { data = await res.json(); } catch (_) { /* Keep a readable fallback for proxy errors. */ }
+            const error = document.getElementById('loginError');
+            error.textContent = serverMessage(data, res.status === 401 ? 'Invalid password.' : `Login is unavailable (HTTP ${res.status}). Try again after checking the server configuration.`);
+            error.style.display = 'block';
         }
     }
 
     async function logout() {
+        closeMemoryNotifyModal();
+        notificationAttempts.clear();
+        inboxMessageAttempts.clear();
+        inboxBeepAttempts.clear();
         await fetch('/api/logout', { method: 'POST' });
         checkAuth();
     }
@@ -261,6 +455,13 @@
                 btnConfig.className = 'btn-config';
                 btnConfig.onclick = () => openConfigModal(mac);
                 tdActions.appendChild(btnConfig);
+
+                if (data.status === 'approved') {
+                    const btnMemoryNotify = document.createElement('button');
+                    btnMemoryNotify.textContent = 'Memory & Notify';
+                    btnMemoryNotify.addEventListener('click', () => openMemoryNotifyModal(mac));
+                    tdActions.appendChild(btnMemoryNotify);
+                }
             }
             
             const btnDelete = document.createElement('button');
@@ -599,6 +800,972 @@
     function closeToolsModal() {
         document.getElementById('toolsModal').classList.add('hidden');
     }
+
+    // Keep this modal separate from editingMac and the five-second table refresh.
+    // An object identity guard prevents late responses from changing another device's view.
+    let memoryNotifySession = null;
+    const notificationAttempts = new Map();
+    const inboxMessageAttempts = new Map();
+    const inboxBeepAttempts = new Map();
+
+    function isCurrentMemorySession(session) {
+        return memoryNotifySession === session;
+    }
+
+    function featureStatus(id, message, tone = '') {
+        const element = document.getElementById(id);
+        element.textContent = message;
+        element.dataset.tone = tone;
+    }
+
+    function serverMessage(data, fallback) {
+        if (data && typeof data.message === 'string') return data.message;
+        if (data && typeof data.error === 'string') return data.error;
+        if (data && data.error && typeof data.error.message === 'string') return data.error.message;
+        return fallback;
+    }
+
+    async function featureRequest(session, suffix, options = {}) {
+        return setupRequest(session, `/api/devices/${encodeURIComponent(session.mac)}/${suffix}`, options);
+    }
+
+    async function setupRequest(session, url, options = {}) {
+        const controller = new AbortController();
+        session.controllers.add(controller);
+        const timeout = setTimeout(() => controller.abort(), 30000);
+        try {
+            const response = await fetch(url, {
+                ...options,
+                credentials: 'same-origin',
+                signal: controller.signal,
+                headers: {
+                    ...(options.method ? {
+                        'Content-Type': 'application/json',
+                        'X-Requested-With': 'XiaozhiDashboard'
+                    } : {}),
+                    ...options.headers
+                }
+            });
+            let data;
+            try {
+                data = await response.json();
+            } catch (_) {
+                throw new Error(`The server returned an unreadable response (HTTP ${response.status}). Refresh before retrying a write.`);
+            }
+            return { response, data };
+        } finally {
+            clearTimeout(timeout);
+            session.controllers.delete(controller);
+        }
+    }
+
+    function memoryError(error) {
+        if (error.name === 'AbortError') return 'The request timed out. A submitted change may still complete; refresh before retrying.';
+        return error.message || 'The request failed. Check your connection and try again.';
+    }
+
+    function setMemoryControls(session) {
+        if (!isCurrentMemorySession(session)) return;
+        const disabled = session.memoryBusy || !session.memoryLoaded;
+        document.getElementById('memoryFields').disabled = disabled;
+        document.getElementById('refreshMemoryButton').disabled = session.memoryBusy;
+        document.getElementById('forgetMemoryConfirm').disabled = disabled;
+        document.getElementById('forgetMemoryButton').disabled = disabled ||
+            document.getElementById('forgetMemoryConfirm').value !== session.mac;
+        document.getElementById('memoryFields').setAttribute('aria-busy', String(session.memoryBusy));
+    }
+
+    function renderStoredMemory(session, data) {
+        if (!isCurrentMemorySession(session)) return;
+        if (!data || typeof data.enabled !== 'boolean' || !Array.isArray(data.facts) ||
+            !data.facts.every(fact => typeof fact === 'string') || !Array.isArray(data.turns)) {
+            throw new Error('The server returned an unexpected memory response. Refresh to try again.');
+        }
+        session.memoryLoaded = true;
+        session.persistedEnabled = data.enabled;
+        session.hasStoredMemory = data.facts.length > 0 || data.turns.length > 0;
+        document.getElementById('memoryEnabled').checked = data.enabled;
+        document.getElementById('memoryFacts').value = data.facts.join('\n');
+        const retention = Number(data.retentionDays);
+        document.getElementById('memoryRetention').textContent = Number.isFinite(retention) && retention > 0
+            ? `Stored turns and explicit facts are retained for up to ${retention} days; saving facts renews their retention.`
+            : 'Retention details are unavailable.';
+        const contextMaxChars = Number(data.contextMaxChars);
+        const maxRecentTurns = Number(data.maxRecentTurns);
+        document.getElementById('memoryContextLimit').textContent = Number.isFinite(contextMaxChars) && contextMaxChars > 0
+            ? `Injected memory is capped at ${contextMaxChars} characters, including its wrapper` +
+                (Number.isFinite(maxRecentTurns) && maxRecentTurns >= 0 ? `, using up to ${maxRecentTurns} recent turns` : '') +
+                '. This does not cap the ongoing live conversation.'
+            : '';
+
+        const list = document.getElementById('memoryTurns');
+        list.replaceChildren();
+        // Transcript strings are always text, never HTML, including model-generated content.
+        data.turns.slice(-20).reverse().forEach(turn => {
+            if (!turn || typeof turn !== 'object') return;
+            const item = document.createElement('li');
+            const timestamp = document.createElement('time');
+            const date = new Date(turn.createdAt);
+            timestamp.textContent = Number.isNaN(date.getTime()) ? 'Time unavailable' : date.toLocaleString();
+            if (!Number.isNaN(date.getTime())) timestamp.dateTime = date.toISOString();
+            const userText = document.createElement('p');
+            userText.textContent = 'User: ' + (typeof turn.user === 'string' ? turn.user : '');
+            const assistantText = document.createElement('p');
+            assistantText.textContent = 'Assistant: ' + (typeof turn.assistant === 'string' ? turn.assistant : '');
+            item.append(timestamp, userText, assistantText);
+            list.appendChild(item);
+        });
+        const empty = document.getElementById('memoryTurnsEmpty');
+        empty.textContent = 'No stored turns.';
+        empty.classList.toggle('hidden', list.children.length > 0);
+        setMemoryControls(session);
+    }
+
+    async function refreshStoredMemory(session = memoryNotifySession) {
+        if (!session || !isCurrentMemorySession(session) || session.memoryBusy) return;
+        session.memoryBusy = true;
+        setMemoryControls(session);
+        featureStatus('memoryStatus', 'Loading memory…');
+        try {
+            const { response, data } = await featureRequest(session, 'memory');
+            if (!isCurrentMemorySession(session)) return;
+            if (!response.ok) throw new Error(serverMessage(data, `Could not load memory (HTTP ${response.status}).`));
+            renderStoredMemory(session, data);
+            featureStatus('memoryStatus', data.enabled ? 'Memory is enabled for this device.' : 'Memory is disabled for this device.');
+        } catch (error) {
+            if (!isCurrentMemorySession(session)) return;
+            session.memoryLoaded = false;
+            featureStatus('memoryStatus', memoryError(error), 'error');
+            document.getElementById('memoryTurnsEmpty').textContent = 'Recent turns could not be refreshed.';
+            document.getElementById('memoryTurnsEmpty').classList.remove('hidden');
+        } finally {
+            if (isCurrentMemorySession(session)) {
+                session.memoryBusy = false;
+                setMemoryControls(session);
+            }
+        }
+    }
+
+    async function saveStoredMemory() {
+        const session = memoryNotifySession;
+        if (!session || session.memoryBusy || !session.memoryLoaded) return;
+        const enabled = document.getElementById('memoryEnabled').checked;
+        const facts = document.getElementById('memoryFacts').value.split(/\r?\n/).map(fact => fact.trim()).filter(Boolean);
+        if (enabled && (facts.length > 20 || facts.some(fact => fact.length > 500))) {
+            featureStatus('memoryStatus', 'Use at most 20 facts, with no more than 500 characters per fact.', 'error');
+            return;
+        }
+        if (!enabled && !session.persistedEnabled && facts.length > 0 && !session.hasStoredMemory) {
+            featureStatus('memoryStatus', 'Enable memory to save facts. Saving with memory off clears stored facts and turns.', 'error');
+            return;
+        }
+        if (!enabled && (session.persistedEnabled || session.hasStoredMemory) &&
+            !confirm('Turn memory off, permanently clear this device’s stored facts and turns, and close its current voice connection? The device must reconnect.')) return;
+
+        session.memoryBusy = true;
+        setMemoryControls(session);
+        featureStatus('memoryStatus', 'Saving memory…');
+        try {
+            const { response, data } = await featureRequest(session, 'memory', {
+                method: 'PUT', body: JSON.stringify({ enabled, facts: enabled ? facts : [] })
+            });
+            if (!isCurrentMemorySession(session)) return;
+            if (!response.ok) throw new Error(serverMessage(data, `Could not save memory (HTTP ${response.status}).`));
+            renderStoredMemory(session, data);
+            featureStatus('memoryStatus', data.enabled
+                ? 'Memory saved. Changes are used on the next Gemini connection.'
+                : 'Memory disabled. Stored facts and turns cleared. The device must reconnect.', 'success');
+        } catch (error) {
+            if (!isCurrentMemorySession(session)) return;
+            // A network failure cannot establish whether the server committed the write.
+            session.memoryLoaded = false;
+            featureStatus('memoryStatus', memoryError(error) + ' Refresh memory to check the saved state.', 'error');
+        } finally {
+            if (isCurrentMemorySession(session)) {
+                session.memoryBusy = false;
+                setMemoryControls(session);
+            }
+        }
+    }
+
+    async function forgetStoredMemory() {
+        const session = memoryNotifySession;
+        if (!session || session.memoryBusy || !session.memoryLoaded) return;
+        const confirmation = document.getElementById('forgetMemoryConfirm').value;
+        if (confirmation !== session.mac) {
+            featureStatus('memoryStatus', 'Type the device address exactly before forgetting memory.', 'error');
+            return;
+        }
+        session.memoryBusy = true;
+        setMemoryControls(session);
+        featureStatus('memoryStatus', 'Forgetting memory…');
+        try {
+            const { response, data } = await featureRequest(session, 'memory', {
+                method: 'DELETE', body: JSON.stringify({ confirm: confirmation })
+            });
+            if (!isCurrentMemorySession(session)) return;
+            if (!response.ok) throw new Error(serverMessage(data, `Could not forget memory (HTTP ${response.status}).`));
+            renderStoredMemory(session, data);
+            document.getElementById('forgetMemoryConfirm').value = '';
+            featureStatus('memoryStatus', 'Stored facts and recent turns cleared. The device must reconnect. Memory is ' +
+                (data.enabled ? 'still enabled for the next Gemini connection.' : 'disabled.'), 'success');
+        } catch (error) {
+            if (!isCurrentMemorySession(session)) return;
+            session.memoryLoaded = false;
+            featureStatus('memoryStatus', memoryError(error) + ' Refresh memory to check the saved state.', 'error');
+        } finally {
+            if (isCurrentMemorySession(session)) {
+                session.memoryBusy = false;
+                setMemoryControls(session);
+            }
+        }
+    }
+
+    function gatewayReady(session) {
+        return Boolean(session.setupLoaded && session.mqttStatus &&
+            session.mqttStatus.enabled === true && session.mqttStatus.configured === true);
+    }
+
+    function notificationsReady(session) {
+        const settings = session.mqttStatus && session.mqttStatus.notifications;
+        return gatewayReady(session) && (!settings || (settings.enabled === true && settings.configured === true));
+    }
+
+    function setSetupControls(session) {
+        if (!isCurrentMemorySession(session)) return;
+        const busy = session.setupBusy || session.transportBusy || session.notificationBusy;
+        document.getElementById('transportFields').disabled = busy || !session.setupLoaded;
+        document.getElementById('mqttTransportOption').disabled = !gatewayReady(session);
+        document.getElementById('saveTransportButton').disabled = busy || !session.setupLoaded ||
+            document.getElementById('deviceTransport').value === session.transport;
+        document.getElementById('refreshNotificationSetupButton').disabled = busy || session.audioBusy;
+        document.getElementById('notificationAudioAsset').disabled = session.audioBusy || session.notificationBusy || !session.audioConfigured;
+        document.getElementById('useLocalAudioButton').disabled = session.audioBusy || session.notificationBusy ||
+            !session.audioConfigured || !document.getElementById('notificationAudioAsset').value;
+        setNotificationControls(session);
+    }
+
+    async function refreshNotificationSetup(session = memoryNotifySession) {
+        if (!session || !isCurrentMemorySession(session) || session.setupBusy || session.transportBusy || session.audioBusy || session.notificationBusy) return;
+        session.setupBusy = true;
+        session.setupLoaded = false;
+        session.audioConfigured = false;
+        setSetupControls(session);
+        featureStatus('mqttSetupStatus', 'Checking MQTT gateway configuration…');
+        featureStatus('notificationAudioStatus', 'Loading local recordings…');
+        const refreshGateway = async () => {
+            try {
+                const [{ response, data }, devices] = await Promise.all([
+                    setupRequest(session, '/api/mqtt/status'), setupRequest(session, '/api/devices')
+                ]);
+                if (!isCurrentMemorySession(session)) return;
+                if (!response.ok) throw new Error(serverMessage(data, 'Could not read gateway configuration.'));
+                if (!data || typeof data.enabled !== 'boolean' || typeof data.configured !== 'boolean') {
+                    throw new Error('The gateway returned an unexpected configuration response.');
+                }
+                if (!devices.response.ok || !devices.data || !devices.data[session.mac] || devices.data[session.mac].status !== 'approved') {
+                    throw new Error('This device is no longer available or approved. Refresh the device list.');
+                }
+                currentDevices[session.mac] = devices.data[session.mac];
+                session.transport = currentDevices[session.mac].transport === 'mqtt' ? 'mqtt' : 'websocket';
+                document.getElementById('deviceTransport').value = session.transport;
+                session.mqttStatus = data;
+                session.setupLoaded = true;
+                const reason = typeof data.reason === 'string' && data.reason ? ` ${data.reason}` : '';
+                const notificationSetup = !data.notifications ? '' : data.notifications.enabled !== true ?
+                    ' Notification sending is disabled. Set NOTIFY_ENABLED=true when ready.' :
+                    data.notifications.configured !== true ?
+                    ' Notification setup is incomplete. Check the approved audio origins and gateway configuration.' : '';
+                featureStatus('mqttSetupStatus', (!data.enabled ? `MQTT gateway is disabled.${reason}` :
+                    !data.configured ? `MQTT gateway is not configured.${reason}` :
+                    'MQTT gateway is configured. This does not confirm that the gateway process or device is online.') + notificationSetup,
+                    notificationsReady(session) ? '' : 'warning');
+                const schemes = data.notifyAllowHttp === true ? 'HTTPS or explicitly enabled HTTP' : 'HTTPS';
+                document.getElementById('notificationUrlHelp').textContent = `Use a local recording below, or a direct ${schemes} URL on an operator-approved origin (NOTIFY_ALLOWED_AUDIO_ORIGINS). External audio must return a 2xx response with mono Ogg Opus audio. The device downloads it; the dashboard and relay never fetch an external URL.`;
+                featureStatus('transportStatus', session.transport === 'mqtt' ?
+                    'Saved transport: MQTT. The device must fetch this OTA configuration before notifications can work.' :
+                    'Saved transport: WebSocket (default). Choose MQTT and save only when the gateway is ready.');
+            } catch (error) {
+                if (isCurrentMemorySession(session)) featureStatus('mqttSetupStatus', memoryError(error), 'error');
+            }
+        };
+        const refreshAudio = async () => {
+            try {
+                const { response, data } = await setupRequest(session, '/api/notification-audio');
+                if (!isCurrentMemorySession(session)) return;
+                if (!response.ok) throw new Error(serverMessage(data, 'Could not list local recordings.'));
+                if (!data || typeof data.configured !== 'boolean' || !Array.isArray(data.files)) {
+                    throw new Error('The server returned an unexpected audio asset list.');
+                }
+                const select = document.getElementById('notificationAudioAsset');
+                select.replaceChildren();
+                const placeholder = document.createElement('option');
+                placeholder.value = ''; placeholder.textContent = 'Select a recording';
+                select.appendChild(placeholder); select.value = '';
+                data.files.forEach(file => {
+                    if (!file || typeof file.name !== 'string' || !Number.isFinite(file.size)) return;
+                    const option = document.createElement('option');
+                    option.value = file.name;
+                    option.textContent = `${file.name}${file.name === 'sample-chime.ogg' ? ' (test tone, no speech)' : ''} — ${Math.ceil(file.size / 1024)} KB`;
+                    select.appendChild(option);
+                });
+                session.audioConfigured = data.configured;
+                featureStatus('notificationAudioStatus', !data.configured ?
+                    'Local audio is not configured. Set NOTIFY_AUDIO_BASE_URL to a device-reachable origin and provide MQTT_GATEWAY_KEY; allow that origin in NOTIFY_ALLOWED_AUDIO_ORIGINS.' :
+                    data.files.length ? 'Select a recording, then use it to create a temporary URL.' :
+                    'No valid mono Ogg Opus recordings were found in NOTIFY_AUDIO_DIR.', data.configured ? '' : 'warning');
+            } catch (error) {
+                if (isCurrentMemorySession(session)) featureStatus('notificationAudioStatus', memoryError(error), 'error');
+            }
+        };
+        await Promise.all([refreshGateway(), refreshAudio()]);
+        if (isCurrentMemorySession(session)) {
+            session.setupBusy = false;
+            setSetupControls(session);
+        }
+    }
+
+    async function saveDeviceTransport() {
+        const session = memoryNotifySession;
+        if (!session || session.setupBusy || session.transportBusy || session.notificationBusy || !session.setupLoaded) return;
+        const transport = document.getElementById('deviceTransport').value;
+        if (!['mqtt', 'websocket'].includes(transport) || transport === session.transport) return;
+        if (transport === 'mqtt' && !gatewayReady(session)) {
+            featureStatus('transportStatus', 'Enable and configure the MQTT gateway before selecting MQTT.', 'error');
+            return;
+        }
+        if (!confirm(`Save ${transport === 'mqtt' ? 'MQTT' : 'WebSocket'} transport for ${session.mac}? This closes the current voice connection. The device must reboot or fetch OTA configuration again to switch its connection. This does not reboot the device.`)) return;
+        session.transportBusy = true;
+        setSetupControls(session);
+        featureStatus('transportStatus', 'Saving transport…');
+        try {
+            const { response, data } = await featureRequest(session, 'transport', { method: 'POST', body: JSON.stringify({ transport }) });
+            if (!isCurrentMemorySession(session)) return;
+            if (!response.ok) throw new Error(serverMessage(data, `Could not save transport (HTTP ${response.status}).`));
+            session.transport = transport;
+            currentDevices[session.mac].transport = transport;
+            featureStatus('transportStatus', `${transport === 'mqtt' ? 'MQTT' : 'WebSocket'} transport saved; the current voice connection was closed. Reboot this device or make it fetch OTA configuration again to switch.`, 'success');
+        } catch (error) {
+            if (!isCurrentMemorySession(session)) return;
+            session.setupLoaded = false;
+            featureStatus('transportStatus', memoryError(error) + ' Refresh connection setup to check the saved transport.', 'error');
+        } finally {
+            if (isCurrentMemorySession(session)) {
+                session.transportBusy = false;
+                setSetupControls(session);
+            }
+        }
+    }
+
+    async function useLocalNotificationAudio() {
+        const session = memoryNotifySession;
+        if (!session || session.audioBusy || session.notificationBusy || !session.audioConfigured) return;
+        const name = document.getElementById('notificationAudioAsset').value;
+        if (!name) return;
+        session.audioBusy = true;
+        setSetupControls(session);
+        featureStatus('notificationAudioStatus', 'Creating a five-minute audio link…');
+        try {
+            const { response, data } = await setupRequest(session, '/api/notification-audio/url', { method: 'POST', body: JSON.stringify({ name }) });
+            if (!isCurrentMemorySession(session)) return;
+            if (!response.ok) throw new Error(serverMessage(data, 'Could not create the audio link.'));
+            if (!data || typeof data.audio_url !== 'string' || !Number.isFinite(Date.parse(data.expires_at))) {
+                throw new Error('The server returned an unexpected audio link.');
+            }
+            document.getElementById('notificationAudioUrl').value = data.audio_url;
+            featureStatus('notificationAudioStatus', `Audio selected. Link expires at ${new Date(data.expires_at).toLocaleTimeString()}. Nothing has been sent; check the subtitle and press Send notification when ready.`);
+        } catch (error) {
+            if (isCurrentMemorySession(session)) featureStatus('notificationAudioStatus', memoryError(error), 'error');
+        } finally {
+            if (isCurrentMemorySession(session)) {
+                session.audioBusy = false;
+                setSetupControls(session);
+            }
+        }
+    }
+
+    function notificationSignature() {
+        return JSON.stringify({
+            audio_url: document.getElementById('notificationAudioUrl').value.trim(),
+            subtitle: document.getElementById('notificationSubtitle').value.trim()
+        });
+    }
+
+    function createNotificationId() {
+        if (typeof crypto.randomUUID === 'function') return crypto.randomUUID();
+        const bytes = crypto.getRandomValues(new Uint8Array(16));
+        bytes[6] = (bytes[6] & 0x0f) | 0x40;
+        bytes[8] = (bytes[8] & 0x3f) | 0x80;
+        const hex = Array.from(bytes, byte => byte.toString(16).padStart(2, '0')).join('');
+        return `${hex.slice(0, 8)}-${hex.slice(8, 12)}-${hex.slice(12, 16)}-${hex.slice(16, 20)}-${hex.slice(20)}`;
+    }
+
+    function setNotificationControls(session) {
+        if (!isCurrentMemorySession(session)) return;
+        const attempt = notificationAttempts.get(session.mac);
+        const matches = attempt && attempt.signature === notificationSignature();
+        const unavailable = !notificationsReady(session) || session.transport !== 'mqtt' || session.transportBusy;
+        document.getElementById('notificationFields').disabled = session.notificationBusy || session.audioBusy || unavailable;
+        document.getElementById('notificationFields').setAttribute('aria-busy', String(session.notificationBusy));
+        const send = document.getElementById('sendNotificationButton');
+        send.disabled = session.notificationBusy || session.audioBusy || unavailable || Boolean(matches && attempt.completed);
+        send.textContent = matches && !attempt.completed ? 'Retry same request' : 'Send notification';
+        document.getElementById('newNotificationButton').classList.toggle('hidden', !attempt);
+        document.getElementById('notificationRequestId').textContent = attempt ? `Request ID: ${attempt.key}` : '';
+    }
+
+    function notificationResponseText(data, response) {
+        const status = data && typeof data.status === 'string' ? data.status : `HTTP ${response.status}`;
+        const fallback = data && typeof data.reason === 'string' ? data.reason :
+            response.ok ? 'The server accepted the request.' : 'The server did not accept the request.';
+        const message = serverMessage(data, fallback);
+        // Publication is the strongest acknowledgement this integration provides.
+        return `Status: ${status}. ${message} Playback and whether anyone heard the audio are unconfirmed.`;
+    }
+
+    async function sendAudioNotification() {
+        const session = memoryNotifySession;
+        if (!session || session.notificationBusy || session.audioBusy) return;
+        if (!notificationsReady(session) || session.transport !== 'mqtt' || session.transportBusy) {
+            featureStatus('notificationStatus', 'Notifications need an enabled, configured notification service and MQTT gateway, with this device saved as MQTT. Refresh connection setup after making changes.', 'warning');
+            return;
+        }
+        const audioUrl = document.getElementById('notificationAudioUrl').value.trim();
+        const subtitle = document.getElementById('notificationSubtitle').value.trim();
+        let parsedUrl;
+        try { parsedUrl = new URL(audioUrl); } catch (_) { /* Validation below also handles empty values. */ }
+        if (!parsedUrl || !['https:', ...(session.mqttStatus.notifyAllowHttp === true ? ['http:'] : [])].includes(parsedUrl.protocol) || parsedUrl.username || parsedUrl.password ||
+            audioUrl.includes('#') || /[\s\\\u0000-\u001f\u007f]/.test(audioUrl) || new TextEncoder().encode(audioUrl).length > 2048) {
+            featureStatus('notificationStatus', `Enter a direct ${session.mqttStatus.notifyAllowHttp === true ? 'HTTP(S)' : 'HTTPS'} audio URL, at most 2048 UTF-8 bytes, without login credentials, whitespace, backslashes, or a fragment. Its origin must be operator-approved.`, 'error');
+            return;
+        }
+        if (new TextEncoder().encode(subtitle).length > 512) {
+            featureStatus('notificationStatus', 'Keep the subtitle to 512 UTF-8 bytes or fewer. Some characters use more than one byte.', 'error');
+            return;
+        }
+        const signature = notificationSignature();
+        let attempt = notificationAttempts.get(session.mac);
+        if (attempt && attempt.signature === signature && attempt.completed) {
+            featureStatus('notificationStatus', attempt.message, attempt.tone);
+            setNotificationControls(session);
+            return;
+        }
+        if (!attempt || attempt.signature !== signature) {
+            try {
+                attempt = { key: createNotificationId(), signature, audioUrl, subtitle, completed: false };
+            } catch (_) {
+                featureStatus('notificationStatus', 'This browser cannot generate a secure request ID. Use a current browser.', 'error');
+                return;
+            }
+            notificationAttempts.set(session.mac, attempt);
+        }
+        const payload = { audio_url: audioUrl, idempotency_key: attempt.key };
+        if (subtitle) payload.subtitles = [{ start_ms: 0, text: subtitle }];
+        const requestVersion = (attempt.requestVersion || 0) + 1;
+        attempt.requestVersion = requestVersion;
+        attempt.message = 'Sending request…';
+        attempt.tone = '';
+        session.notificationBusy = true;
+        setSetupControls(session);
+        featureStatus('notificationStatus', attempt.message);
+        try {
+            const { response, data } = await featureRequest(session, 'notifications', {
+                method: 'POST', body: JSON.stringify(payload)
+            });
+            if (attempt.requestVersion !== requestVersion) return;
+            // Retain a result even if the user closed the window, but never touch a newer view.
+            attempt.completed = response.ok;
+            attempt.message = notificationResponseText(data, response);
+            const status = data && typeof data.status === 'string' ? data.status : '';
+            attempt.tone = !response.ok ? 'error' : /unknown|not_published/i.test(status) ? 'warning' : '';
+            if (isCurrentMemorySession(session)) featureStatus('notificationStatus', attempt.message, attempt.tone);
+        } catch (error) {
+            if (attempt.requestVersion !== requestVersion) return;
+            attempt.message = 'No confirmed response was received. Delivery is unknown. Retrying this request reuses its request ID; starting another request may duplicate playback.';
+            attempt.tone = 'warning';
+            if (isCurrentMemorySession(session)) featureStatus('notificationStatus', attempt.message, attempt.tone);
+        } finally {
+            if (isCurrentMemorySession(session)) {
+                session.notificationBusy = false;
+                setSetupControls(session);
+            }
+        }
+    }
+
+    function startAnotherNotification() {
+        const session = memoryNotifySession;
+        if (!session || session.notificationBusy || session.audioBusy) return;
+        if (notificationAttempts.has(session.mac) && !confirm('A previous request may already have played. Starting another notification can cause duplicate playback. Continue?')) return;
+        notificationAttempts.delete(session.mac);
+        document.getElementById('notificationAudioUrl').value = '';
+        document.getElementById('notificationSubtitle').value = '';
+        featureStatus('notificationStatus', '');
+        setNotificationControls(session);
+        document.getElementById('notificationAudioUrl').focus();
+    }
+
+    function inboxDate(value) {
+        if (value === null || value === undefined) return 'Unknown time';
+        const date = new Date(value);
+        return Number.isFinite(date.getTime()) ? date.toLocaleString() : 'Unknown time';
+    }
+
+    function inboxIsRead(record) {
+        return record.readAt !== null && record.readAt !== undefined;
+    }
+
+    function validInboxRecord(record, detail = false) {
+        return record && typeof record.id === 'string' && /^[0-9a-f-]{36}$/i.test(record.id) &&
+            typeof record.title === 'string' && typeof record.sender === 'string' &&
+            typeof record[detail ? 'text' : 'preview'] === 'string';
+    }
+
+    function inboxBeepText(beep) {
+        const status = beep && ['published', 'not_published', 'unknown'].includes(beep.status) ? beep.status : 'unknown';
+        const reason = beep && typeof beep.reason === 'string' && beep.reason ? ` ${beep.reason}.` : '';
+        return `Beep publication: ${status}.${reason} Playback and whether anyone heard it remain unknown.`;
+    }
+
+    function selectedBeepAttempt(session) {
+        return inboxBeepAttempts.get(session.mac)?.get(session.inboxDetailId);
+    }
+
+    function setInboxControls(session) {
+        if (!isCurrentMemorySession(session)) return;
+        document.getElementById('inboxFilter').disabled = session.inboxBusy;
+        document.getElementById('refreshInboxButton').disabled = session.inboxBusy;
+        document.getElementById('inboxPreviousButton').disabled = session.inboxBusy || !session.inboxHistory.length;
+        document.getElementById('inboxNextButton').disabled = session.inboxBusy || !session.inboxNextCursor;
+        document.getElementById('inboxList').setAttribute('aria-busy', String(session.inboxBusy));
+        const detail = session.inboxDetail;
+        const beepAttempt = selectedBeepAttempt(session);
+        const detailBusy = session.inboxDetailBusy || session.inboxReadBusy || Boolean(beepAttempt?.busy);
+        document.getElementById('markInboxReadButton').disabled = detailBusy || !detail || inboxIsRead(detail);
+        const retry = document.getElementById('retryInboxBeepButton');
+        retry.disabled = detailBusy || !detail;
+        retry.textContent = beepAttempt && !beepAttempt.confirmed ? 'Retry same beep request' : 'Retry beep only';
+        const attempt = inboxMessageAttempts.get(session.mac);
+        document.getElementById('inboxMessageTitle').disabled = Boolean(attempt);
+        document.getElementById('inboxMessageText').disabled = Boolean(attempt);
+        const save = document.getElementById('saveInboxMessageButton');
+        save.disabled = Boolean(attempt && (attempt.busy || attempt.stored));
+        save.textContent = attempt?.busy ? 'Saving message…' : attempt && !attempt.stored ? 'Retry same message' : 'Save message & beep';
+        document.getElementById('newInboxMessageButton').classList.toggle('hidden', !attempt);
+        document.getElementById('newInboxMessageButton').disabled = Boolean(attempt?.busy);
+    }
+
+    function renderInboxMessageAttempt(session) {
+        if (!isCurrentMemorySession(session)) return;
+        const attempt = inboxMessageAttempts.get(session.mac);
+        if (attempt) {
+            document.getElementById('inboxMessageTitle').value = attempt.title;
+            document.getElementById('inboxMessageText').value = attempt.text;
+        }
+        featureStatus('inboxStorageStatus', attempt?.storageMessage || '', attempt?.storageTone || '');
+        featureStatus('inboxBeepStatus', attempt?.beepMessage || '', attempt?.beepTone || '');
+        document.getElementById('inboxMessageRequestId').textContent = attempt
+            ? `Request ID: ${attempt.key}` + (attempt.id ? ` · Saved message ID: ${attempt.id}` : '') : '';
+        setInboxControls(session);
+    }
+
+    function closeInboxDetail(session = memoryNotifySession) {
+        if (!session || !isCurrentMemorySession(session)) return;
+        session.inboxDetailVersion++;
+        session.inboxDetailId = null;
+        session.inboxDetail = null;
+        session.inboxDetailBusy = false;
+        document.getElementById('inboxDetail').classList.add('hidden');
+        document.getElementById('inboxDetailText').textContent = '';
+        document.getElementById('inboxDetailMeta').textContent = '';
+        featureStatus('inboxDetailStatus', '');
+        featureStatus('inboxDetailBeepStatus', '');
+        setInboxControls(session);
+    }
+
+    function renderInboxList(session, data) {
+        const list = document.getElementById('inboxList');
+        list.replaceChildren();
+        data.notifications.forEach(record => {
+            const item = document.createElement('li');
+            const open = document.createElement('button');
+            open.type = 'button';
+            open.textContent = record.title || '(Untitled message)';
+            open.addEventListener('click', () => openInboxDetail(record.id));
+            const meta = document.createElement('p');
+            meta.className = 'help-text';
+            meta.textContent = `${inboxIsRead(record) ? 'Read' : 'Unread'} · From ${record.sender} · ${inboxDate(record.createdAt)}`;
+            const preview = document.createElement('p');
+            preview.textContent = record.preview;
+            const beep = document.createElement('p');
+            beep.className = 'help-text';
+            beep.textContent = inboxBeepText(record.beep);
+            item.append(open, meta, preview, beep);
+            list.appendChild(item);
+        });
+        const read = data.notifications.filter(inboxIsRead).length;
+        document.getElementById('inboxCounts').textContent = `${data.unreadCount} unread in this device’s inbox · This page: ${data.notifications.length - read} unread, ${read} read`;
+        document.getElementById('inboxPageLabel').textContent = `Page ${session.inboxHistory.length + 1}`;
+        featureStatus('inboxStatus', data.notifications.length ? '' :
+            document.getElementById('inboxFilter').value === 'unread' ? 'No unread messages on this page.' : 'No saved messages on this page.');
+    }
+
+    async function refreshInbox(session = memoryNotifySession, options = {}) {
+        if (!session || !isCurrentMemorySession(session)) return;
+        const version = ++session.inboxVersion;
+        const cursor = options.cursor || null;
+        const history = options.history || [];
+        const unreadOnly = document.getElementById('inboxFilter').value === 'unread';
+        if (!options.keepDetail) closeInboxDetail(session);
+        session.inboxBusy = true;
+        setInboxControls(session);
+        featureStatus('inboxStatus', 'Loading saved messages…');
+        try {
+            const suffix = `inbox?unread_only=${unreadOnly}` + (cursor ? `&cursor=${encodeURIComponent(cursor)}` : '');
+            const { response, data } = await featureRequest(session, suffix);
+            if (!isCurrentMemorySession(session) || version !== session.inboxVersion) return;
+            if (!response.ok) throw new Error(serverMessage(data, `Could not load the inbox (HTTP ${response.status}).`));
+            if (!data || !Array.isArray(data.notifications) || !data.notifications.every(record => validInboxRecord(record)) ||
+                !Number.isSafeInteger(data.unreadCount) || data.unreadCount < 0 ||
+                !(data.nextCursor === null || typeof data.nextCursor === 'string')) {
+                throw new Error('The server returned an unexpected inbox response. Refresh to try again.');
+            }
+            session.inboxCursor = cursor;
+            session.inboxHistory = history;
+            session.inboxNextCursor = data.nextCursor;
+            renderInboxList(session, data);
+        } catch (error) {
+            if (isCurrentMemorySession(session) && version === session.inboxVersion) {
+                document.getElementById('inboxList').replaceChildren();
+                document.getElementById('inboxCounts').textContent = 'Inbox counts are unavailable until refresh succeeds.';
+                session.inboxNextCursor = null;
+                session.inboxHistory = [];
+                document.getElementById('inboxPageLabel').textContent = 'Page unavailable';
+                featureStatus('inboxStatus', memoryError(error), 'error');
+            }
+        } finally {
+            if (isCurrentMemorySession(session) && version === session.inboxVersion) {
+                session.inboxBusy = false;
+                setInboxControls(session);
+            }
+        }
+    }
+
+    function changeInboxPage(next) {
+        const session = memoryNotifySession;
+        if (!session || session.inboxBusy) return;
+        if (next && session.inboxNextCursor) {
+            refreshInbox(session, { cursor: session.inboxNextCursor, history: [...session.inboxHistory, session.inboxCursor] });
+        } else if (!next && session.inboxHistory.length) {
+            const history = [...session.inboxHistory];
+            refreshInbox(session, { cursor: history.pop(), history });
+        }
+    }
+
+    function renderInboxDetail(session, record) {
+        session.inboxDetail = record;
+        document.getElementById('inboxDetailTitle').textContent = record.title || '(Untitled message)';
+        document.getElementById('inboxDetailMeta').textContent = `From ${record.sender} · Saved ${inboxDate(record.createdAt)} · ${record.id}`;
+        document.getElementById('inboxDetailText').textContent = record.text;
+        featureStatus('inboxDetailStatus', inboxIsRead(record) ? `Read · ${inboxDate(record.readAt)}` : 'Unread. Opening this message does not mark it read.');
+        const attempt = selectedBeepAttempt(session);
+        featureStatus('inboxDetailBeepStatus', attempt?.message || inboxBeepText(record.beep), attempt?.tone || '');
+        setInboxControls(session);
+    }
+
+    async function openInboxDetail(id) {
+        const session = memoryNotifySession;
+        if (!session) return;
+        closeInboxDetail(session);
+        session.inboxDetailId = id;
+        session.inboxDetailBusy = true;
+        const version = session.inboxDetailVersion;
+        document.getElementById('inboxDetail').classList.remove('hidden');
+        document.getElementById('inboxDetailTitle').textContent = 'Message';
+        featureStatus('inboxDetailStatus', 'Loading message…');
+        setInboxControls(session);
+        try {
+            const { response, data } = await featureRequest(session, `inbox/${encodeURIComponent(id)}`);
+            if (!isCurrentMemorySession(session) || session.inboxDetailVersion !== version) return;
+            if (!response.ok) throw new Error(serverMessage(data, `Could not load this message (HTTP ${response.status}).`));
+            if (!validInboxRecord(data, true) || data.id !== id) throw new Error('The server returned an unexpected message. Refresh the inbox.');
+            renderInboxDetail(session, data);
+        } catch (error) {
+            if (isCurrentMemorySession(session) && session.inboxDetailVersion === version) featureStatus('inboxDetailStatus', memoryError(error), 'error');
+        } finally {
+            if (isCurrentMemorySession(session) && session.inboxDetailVersion === version) {
+                session.inboxDetailBusy = false;
+                setInboxControls(session);
+            }
+        }
+    }
+
+    async function markInboxRead() {
+        const session = memoryNotifySession;
+        if (!session || !session.inboxDetail || session.inboxDetailBusy || session.inboxReadBusy || selectedBeepAttempt(session)?.busy || inboxIsRead(session.inboxDetail)) return;
+        const id = session.inboxDetailId;
+        const version = session.inboxDetailVersion;
+        session.inboxReadBusy = true;
+        setInboxControls(session);
+        featureStatus('inboxDetailStatus', 'Marking this message read…');
+        try {
+            const { response, data } = await featureRequest(session, `inbox/${encodeURIComponent(id)}/read`, { method: 'POST', body: JSON.stringify({ confirm: true }) });
+            if (!response.ok) throw new Error(serverMessage(data, `Could not mark this message read (HTTP ${response.status}).`));
+            if (!validInboxRecord(data, true) || data.id !== id || !inboxIsRead(data)) throw new Error('The server did not confirm the read status. Refresh the inbox.');
+            if (!isCurrentMemorySession(session)) return;
+            if (session.inboxDetailVersion === version) renderInboxDetail(session, data);
+            await refreshInbox(session, { keepDetail: true });
+        } catch (error) {
+            if (isCurrentMemorySession(session) && session.inboxDetailVersion === version) {
+                featureStatus('inboxDetailStatus', memoryError(error) + ' Read status is not confirmed; reopen the message to check.', 'error');
+            }
+        } finally {
+            session.inboxReadBusy = false;
+            if (isCurrentMemorySession(session)) setInboxControls(session);
+        }
+    }
+
+    async function saveInboxMessage() {
+        const session = memoryNotifySession;
+        if (!session) return;
+        let attempt = inboxMessageAttempts.get(session.mac);
+        if (attempt && (attempt.busy || attempt.stored)) return;
+        if (!attempt) {
+            const title = document.getElementById('inboxMessageTitle').value.trim();
+            const text = document.getElementById('inboxMessageText').value.trim();
+            if (!text || text.length > 2000 || title.length > 120 || /[\x00-\x1f\x7f]/.test(title) || /[\x00-\x08\x0b\x0c\x0e-\x1f\x7f]/.test(text)) {
+                featureStatus('inboxStorageStatus', 'Enter a message of 1–2,000 characters and a title up to 120 characters, without unsupported control characters.', 'error');
+                return;
+            }
+            try { attempt = { key: createNotificationId(), title, text, stored: false }; }
+            catch (_) { featureStatus('inboxStorageStatus', 'This browser cannot generate a secure request ID. Use a current browser.', 'error'); return; }
+            inboxMessageAttempts.set(session.mac, attempt);
+        }
+        attempt.busy = true;
+        attempt.storageMessage = 'Saving message before requesting its beep…';
+        attempt.storageTone = '';
+        attempt.beepMessage = 'Beep publication is not yet confirmed.';
+        attempt.beepTone = '';
+        renderInboxMessageAttempt(session);
+        try {
+            const { response, data } = await featureRequest(session, 'inbox', {
+                method: 'POST', body: JSON.stringify({ title: attempt.title, text: attempt.text, idempotency_key: attempt.key })
+            });
+            if (data?.stored === true && typeof data.notification_id === 'string') {
+                attempt.stored = true;
+                attempt.id = data.notification_id;
+                attempt.storageMessage = data.duplicate ? 'Message already saved. The same message was reused; no duplicate was created.' : 'Message saved to this device’s inbox.';
+                attempt.storageTone = 'success';
+                attempt.beepMessage = inboxBeepText(data.beep) + (data.beep_status_persisted === false ? ' The latest beep status could not be saved; the inbox may show an older status.' : '');
+                attempt.beepTone = data.beep?.status === 'published' && data.beep_status_persisted !== false ? '' : 'warning';
+            } else {
+                attempt.storageMessage = `Storage is not confirmed. ${serverMessage(data, `The server returned HTTP ${response.status}.`)} Retry the same message to reuse its request ID.`;
+                attempt.storageTone = 'warning';
+                attempt.beepMessage = 'Beep publication is not confirmed.';
+                attempt.beepTone = 'warning';
+            }
+        } catch (_) {
+            attempt.storageMessage = 'No confirmed response was received. Storage is unknown. Refresh the inbox or retry the same message with its existing request ID; a new message could create a duplicate.';
+            attempt.storageTone = 'warning';
+            attempt.beepMessage = 'Beep publication and playback are unknown. No automatic retry was made.';
+            attempt.beepTone = 'warning';
+        } finally {
+            attempt.busy = false;
+            const active = memoryNotifySession;
+            if (active?.mac === session.mac && inboxMessageAttempts.get(session.mac) === attempt) {
+                renderInboxMessageAttempt(active);
+                if (attempt.stored) await refreshInbox(active, { keepDetail: true });
+            }
+        }
+    }
+
+    function startNewInboxMessage() {
+        const session = memoryNotifySession;
+        const attempt = session && inboxMessageAttempts.get(session.mac);
+        if (!session || attempt?.busy) return;
+        if (attempt && !confirm('Start a new message with a new request ID? The previous message may already be saved and its beep may already have played. Sending again could create a duplicate message and beep.')) return;
+        inboxMessageAttempts.delete(session.mac);
+        document.getElementById('inboxMessageTitle').value = '';
+        document.getElementById('inboxMessageText').value = '';
+        renderInboxMessageAttempt(session);
+        document.getElementById('inboxMessageTitle').focus();
+    }
+
+    async function retryInboxBeep() {
+        const session = memoryNotifySession;
+        if (!session || !session.inboxDetail || session.inboxDetailBusy || session.inboxReadBusy) return;
+        const id = session.inboxDetailId;
+        let attempts = inboxBeepAttempts.get(session.mac);
+        let attempt = attempts?.get(id);
+        if (attempt?.busy) return;
+        const reuse = attempt && !attempt.confirmed;
+        if (!confirm((reuse ? 'Retry this same beep request with its existing request ID?' : 'Request another beep for this saved message?') + ' Playback is unknown and another beep may be heard. No new message will be created, the message will not be spoken, and its read status will not change.')) return;
+        if (!reuse) {
+            try { attempt = { key: createNotificationId(), confirmed: false }; }
+            catch (_) { featureStatus('inboxDetailBeepStatus', 'This browser cannot generate a secure request ID. Use a current browser.', 'error'); return; }
+            if (!attempts) { attempts = new Map(); inboxBeepAttempts.set(session.mac, attempts); }
+            attempts.set(id, attempt);
+        }
+        attempt.busy = true;
+        attempt.message = 'Requesting a beep for the existing saved message…';
+        attempt.tone = '';
+        featureStatus('inboxDetailBeepStatus', attempt.message);
+        setInboxControls(session);
+        try {
+            const { data } = await featureRequest(session, `inbox/${encodeURIComponent(id)}/beep`, {
+                method: 'POST', body: JSON.stringify({ confirm: true, attempt_id: attempt.key })
+            });
+            if (data?.stored === true && data.notification_id === id && ['published', 'not_published', 'unknown'].includes(data.beep?.status)) {
+                attempt.confirmed = true;
+                attempt.message = inboxBeepText(data.beep) + ' The existing message and its read status were kept.' +
+                    (data.beep_status_persisted === false ? ' The latest beep status could not be saved; the inbox may show an older status.' : '');
+                attempt.tone = data.beep.status === 'published' && data.beep_status_persisted !== false ? '' : 'warning';
+            } else {
+                attempt.message = `Beep publication is unconfirmed. ${serverMessage(data, 'No usable acknowledgement was received.')} Retry the same beep request to reuse its request ID.`;
+                attempt.tone = 'warning';
+            }
+        } catch (_) {
+            attempt.message = 'No confirmed response was received. Beep publication and playback are unknown. No automatic retry was made; retrying this beep reuses its request ID.';
+            attempt.tone = 'warning';
+        } finally {
+            attempt.busy = false;
+            const active = memoryNotifySession;
+            if (active?.mac === session.mac && inboxBeepAttempts.get(session.mac)?.get(id) === attempt) {
+                if (active.inboxDetailId === id) featureStatus('inboxDetailBeepStatus', attempt.message, attempt.tone);
+                setInboxControls(active);
+                await refreshInbox(active, { keepDetail: true });
+            }
+        }
+    }
+
+    function openMemoryNotifyModal(mac) {
+        if (!currentDevices[mac] || currentDevices[mac].status !== 'approved') return;
+        closeMemoryNotifyModal();
+        const session = {
+            mac, controllers: new Set(), memoryBusy: false, memoryLoaded: false,
+            inboxBusy: false, inboxVersion: 0, inboxCursor: null, inboxNextCursor: null, inboxHistory: [],
+            inboxDetailVersion: 0, inboxDetailId: null, inboxDetail: null, inboxDetailBusy: false, inboxReadBusy: false,
+            notificationBusy: false, setupBusy: false, setupLoaded: false, transportBusy: false,
+            transport: currentDevices[mac].transport === 'mqtt' ? 'mqtt' : 'websocket',
+            audioBusy: false, audioConfigured: false, mqttStatus: null, returnFocus: document.activeElement
+        };
+        memoryNotifySession = session;
+        document.getElementById('memoryDeviceDisplay').textContent = mac;
+        document.getElementById('memoryEnabled').checked = false;
+        document.getElementById('memoryFacts').value = '';
+        document.getElementById('memoryRetention').textContent = '';
+        document.getElementById('memoryContextLimit').textContent = '';
+        document.getElementById('memoryTurns').replaceChildren();
+        document.getElementById('memoryTurnsEmpty').textContent = 'Loading recent turns…';
+        document.getElementById('memoryTurnsEmpty').classList.remove('hidden');
+        document.getElementById('forgetMemoryConfirm').value = '';
+        document.getElementById('memoryNotifyModal').classList.remove('hidden');
+        const attempt = notificationAttempts.get(mac);
+        document.getElementById('notificationAudioUrl').value = attempt ? attempt.audioUrl : '';
+        document.getElementById('notificationSubtitle').value = attempt ? attempt.subtitle : '';
+        featureStatus('notificationStatus', attempt ? attempt.message : '', attempt ? attempt.tone : '');
+        document.getElementById('inboxFilter').value = 'all';
+        document.getElementById('inboxList').replaceChildren();
+        document.getElementById('inboxCounts').textContent = '';
+        document.getElementById('inboxPageLabel').textContent = 'Page 1';
+        document.getElementById('inboxMessageTitle').value = '';
+        document.getElementById('inboxMessageText').value = '';
+        renderInboxMessageAttempt(session);
+        document.getElementById('deviceTransport').value = session.transport;
+        document.getElementById('notificationAudioAsset').value = '';
+        featureStatus('transportStatus', '');
+        setSetupControls(session);
+        document.getElementById('closeMemoryNotifyButton').focus();
+        refreshStoredMemory(session);
+        refreshNotificationSetup(session);
+        refreshInbox(session);
+    }
+
+    function closeMemoryNotifyModal() {
+        const session = memoryNotifySession;
+        memoryNotifySession = null;
+        if (session && session.notificationBusy) {
+            const attempt = notificationAttempts.get(session.mac);
+            if (attempt) {
+                attempt.message = 'Stopped waiting for the response. Delivery is unknown. Retrying reuses the same request ID; starting another request may duplicate playback.';
+                attempt.tone = 'warning';
+            }
+        }
+        const inboxAttempt = session && inboxMessageAttempts.get(session.mac);
+        if (inboxAttempt?.busy) {
+            inboxAttempt.storageMessage = 'Stopped waiting. Storage is unknown until the response arrives. Reopen the inbox to check; reuse this request ID before starting a new message.';
+            inboxAttempt.storageTone = 'warning';
+            inboxAttempt.beepMessage = 'Beep publication and playback are unconfirmed.';
+            inboxAttempt.beepTone = 'warning';
+        }
+        if (session) session.controllers.forEach(controller => controller.abort());
+        document.getElementById('memoryNotifyModal').classList.add('hidden');
+        document.getElementById('memoryFacts').value = '';
+        document.getElementById('memoryTurns').replaceChildren();
+        document.getElementById('forgetMemoryConfirm').value = '';
+        document.getElementById('notificationAudioUrl').value = '';
+        document.getElementById('notificationSubtitle').value = '';
+        document.getElementById('inboxList').replaceChildren();
+        document.getElementById('inboxDetail').classList.add('hidden');
+        document.getElementById('inboxDetailText').textContent = '';
+        document.getElementById('inboxMessageTitle').value = '';
+        document.getElementById('inboxMessageText').value = '';
+        if (session && session.returnFocus && session.returnFocus.isConnected) session.returnFocus.focus();
+    }
+
+    document.getElementById('refreshInboxButton').addEventListener('click', () => refreshInbox());
+    document.getElementById('inboxFilter').addEventListener('change', () => refreshInbox());
+    document.getElementById('inboxNextButton').addEventListener('click', () => changeInboxPage(true));
+    document.getElementById('inboxPreviousButton').addEventListener('click', () => changeInboxPage(false));
+    document.getElementById('closeInboxDetailButton').addEventListener('click', () => closeInboxDetail());
+    document.getElementById('markInboxReadButton').addEventListener('click', markInboxRead);
+    document.getElementById('saveInboxMessageButton').addEventListener('click', saveInboxMessage);
+    document.getElementById('newInboxMessageButton').addEventListener('click', startNewInboxMessage);
+    document.getElementById('retryInboxBeepButton').addEventListener('click', retryInboxBeep);
+
+    document.getElementById('saveMemoryButton').addEventListener('click', saveStoredMemory);
+    document.getElementById('refreshMemoryButton').addEventListener('click', () => refreshStoredMemory());
+    document.getElementById('forgetMemoryButton').addEventListener('click', forgetStoredMemory);
+    document.getElementById('forgetMemoryConfirm').addEventListener('input', () => {
+        if (memoryNotifySession) setMemoryControls(memoryNotifySession);
+    });
+    document.getElementById('saveTransportButton').addEventListener('click', saveDeviceTransport);
+    document.getElementById('refreshNotificationSetupButton').addEventListener('click', () => refreshNotificationSetup());
+    document.getElementById('useLocalAudioButton').addEventListener('click', useLocalNotificationAudio);
+    ['deviceTransport', 'notificationAudioAsset'].forEach(id => {
+        document.getElementById(id).addEventListener('change', () => {
+            if (memoryNotifySession) setSetupControls(memoryNotifySession);
+        });
+    });
+    document.getElementById('sendNotificationButton').addEventListener('click', sendAudioNotification);
+    document.getElementById('newNotificationButton').addEventListener('click', startAnotherNotification);
+    ['notificationAudioUrl', 'notificationSubtitle'].forEach(id => {
+        document.getElementById(id).addEventListener('input', () => {
+            if (memoryNotifySession) setNotificationControls(memoryNotifySession);
+        });
+    });
+    document.getElementById('closeMemoryNotifyButton').addEventListener('click', closeMemoryNotifyModal);
+    document.getElementById('memoryNotifyModal').addEventListener('click', event => {
+        if (event.target === event.currentTarget) closeMemoryNotifyModal();
+    });
+    document.getElementById('memoryNotifyModal').addEventListener('keydown', event => {
+        if (!memoryNotifySession) return;
+        if (event.key === 'Escape') {
+            event.preventDefault();
+            closeMemoryNotifyModal();
+        } else if (event.key === 'Tab') {
+            const controls = Array.from(event.currentTarget.querySelectorAll('button, input, textarea, select, [tabindex="0"]'))
+                .filter(element => !element.matches(':disabled') && !element.closest('.hidden'));
+            const first = controls[0];
+            const last = controls[controls.length - 1];
+            if (first && event.shiftKey && document.activeElement === first) {
+                event.preventDefault();
+                last.focus();
+            } else if (last && !event.shiftKey && document.activeElement === last) {
+                event.preventDefault();
+                first.focus();
+            }
+        }
+    });
 
     // Init
     checkAuth();

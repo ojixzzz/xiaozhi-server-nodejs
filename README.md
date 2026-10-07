@@ -1,67 +1,148 @@
-# Xiaozhi Universal Relay - Multi-LLM Bridge
+# Xiaozhi Universal Relay: Gemini Memory & Notification Inbox
 
-A modular Node.js relay that implements the **[Xiaozhi Protocol](https://github.com/78/xiaozhi-esp32)**, bridging hardware devices (like ESP32 smartwatches and AI assistants) with various LLM backends including **Google Gemini**, **Alibaba Qwen**, and local **LFM (Liquid Foundation Models)** based on **[llama.cpp LFM2.5-Audio](https://github.com/tdakhran/llama.cpp/tree/tarek/feat/os-lfm2.5-audio-1.5b-upstream)**.
+A Node.js relay for [Xiaozhi ESP32 devices](https://github.com/78/xiaozhi-esp32),
+with Gemini, Qwen and local LFM provider adapters. This branch adds opt-in,
+device-scoped SQLite memory, a durable notification inbox for Hermes/other agents,
+and a bundled MQTT/UDP gateway while preserving the existing WebSocket path.
 
-## Features
-- **Xiaozhi Protocol Support**: Fully compatible with Xiaozhi "hello" handshakes, state management (stt, tts, abort), and binary audio transport.
-- **Universal Modular Architecture**: Built on a highly modular `LLMProvider` adapter pattern. The server starts even if no providers are configured, allowing you to manage everything via the web dashboard.
-- **Supported Backends**:
-  - **Google Gemini Live**: Full real-time streaming with MCP Tool calling support.
-  - **Alibaba Qwen (Omni & Realtime)**: Support for `qwen3-omni-flash` with full **MCP Tool calling** and `qwen3-omni-flash-realtime` for ultra-low latency.
-  - **Local LFM / Llama**: Support for local model servers (e.g., Llama Liquid) with both sequential and native interleaved audio support. *Note: MCP tool call support for LFM is currently in development.*
-- **Dynamic Configuration Dashboard**: Choose between backends, models, and custom voices per-device. The UI automatically labels and disables providers that are missing required API keys or environment variables.
-- **Built-in Dashboard MCP**: Control the server itself by talking to the AI! Approve new devices and change configurations via voice commands.
-- **Real-time Transcoding**: Converts 16kHz Opus from devices to PCM, and transcodes LLM PCM responses back to 60ms Opus frames.
-- **Low Latency**: Direct WebSocket piping for minimal delay.
-- **Secure**: Features per-device dynamic tokens and max-pending rate limits for anti-spam.
+The intended flow is: an authorized agent sends **text** through HTTP or MCP →
+the relay stores it → Xiaozhi plays a short beep when possible → the user later
+asks Gemini “notifnya apa?” to hear the stored content. The incoming text is not
+automatically spoken or inserted into conversation memory. The same complete flow
+can be tested without Hermes: open **Memory & Notify → Test message & beep**,
+then **Save message & beep**. The dashboard also shows the saved inbox, read status
+and an explicit **Retry beep only** action without creating another message.
 
-## How it Works
-1.  **Handshake**: The Xiaozhi device connects and sends a `{"type": "hello", ...}` JSON message.
-2.  **Session Initiation**: The relay validates the token and instantiates the configured `LLMProvider`. If a provider is selected but not configured (e.g., missing API key), the device receives a graceful error message.
-3.  **Voice Interaction**: 
-    - Device sends 16kHz Opus -> Relay decodes to PCM -> LLM Provider processes (using Server VAD or custom Energy VAD).
-    - LLM speaks PCM -> Relay encodes to 24kHz Opus -> Device plays.
-    - If supported by the model, the Relay routes **MCP (Model Context Protocol)** tool calls to connected devices.
-4.  **Feedback**: Relay sends STT and TTS text updates back to the device for display.
+**Mulai di sini: [Panduan setup Bahasa Indonesia](docs/SETUP_ID.md).**
+The guide covers a one-device LAN test, TLS configuration, verification and
+rollback. See the [pinned firmware compatibility evidence](docs/firmware-compatibility.md)
+for source/parser checks and the Spotpear battery-sleep caveat. The package includes the gateway and a test chime; it does not require
+Redis or a separate MQTT broker.
 
-## Authentication & Security
+## What is included
 
-The server features a multi-layered authentication system:
-- **Xiaozhi Devices**: Automatically assigned unique tokens upon first discovery via the OTA endpoint.
-- **MCP Devices**: Support for "Bring Your Own Token" to lock specific device IDs.
-- **Anti-Spam**: Strict limits on pending unapproved devices to prevent DOS attacks.
+- Existing Xiaozhi WebSocket voice relay and per-device provider/voice dashboard
+- Gemini conversation memory stored in SQLite, off by default per device
+- Administrator-entered explicit facts, review, retention and clear/disable controls
+- A separate persistent SQLite inbox for per-device text notifications, with
+  sender authentication, an explicit device allowlist and unread/read state
+- Dashboard inbox with filters/details/read status and a complete **Save message & beep** test, requiring no Hermes or external sender token
+- HTTP and stateless MCP ingress for configured senders; Gemini tools retrieve
+  this device's notifications and mark them read only through an explicit action
+- MQTT control server with a UDP-to-WebSocket voice bridge in `gateway/`
+- Explicit per-device WebSocket/MQTT selection and signed, approved-device OTA
+  configuration; saving a transport does not reboot or flash the device
+- Authenticated internal HTTP notification forwarding, bounded requests and
+  process-local idempotency
+- Signed five-minute downloads for local mono Ogg Opus recordings, plus a bundled
+  one-second two-beep `sample-chime.ogg` test tone with no speech
+- Docker Compose with an optional `mqtt` profile and persistent relay data volume
 
-## Setup Instructions
+Memory is shared by everyone using a device; it does not identify the speaker.
+The defaults retain eight completed Gemini turns, at most 1,200 characters per
+side, and cap the entire injected memory section at 6,000 characters. This is
+not a token count or a cap on total live-session context. See
+[memory/privacy details](docs/memory.md).
 
-### 1. Installation
-```bash
-cd xiaozhi-server-nodejs
-npm install
+The inbox lives in `DATA_DIR/notifications.sqlite`, independently of
+`memory.sqlite`, with default 30-day retention, including unread entries, and a
+maximum of 100 records per device. A full inbox rejects a new message rather than
+silently evicting an unexpired record. A beep, list or get does not mark it read.
+Text stays stored
+when the device is busy/offline or a beep cannot be delivered. See
+[inbox semantics](docs/inbox.md) before relying on retention/read state.
+
+The immediate beep requires compatible `notify` firmware, an online idle device,
+reachable audio and explicitly selected MQTT transport. `published` means a
+gateway socket write, **not verified playback**. There is no offline audio queue,
+automatic beep retry, automatic notification TTS or reminder scheduler. The chime contains no
+speech; Gemini reads notification text only when the user asks. No live Hermes
+account/agent connection has been configured or tested here.
+
+## Quick start
+
+Requires Node >=24.0.0 for native execution, or Docker with Compose for containers.
+For a fresh checkout and the default WebSocket path:
+
+```sh
+# Do not overwrite an existing .env; merge settings manually instead.
+test -e .env || cp .env.example .env
+# Edit .env with your provider key, unique admin password (>=12 characters),
+# and a device-reachable WEBSOCKET_URL_FOR_ALLOWED_DEVICE.
+docker compose up -d --build
+curl --fail http://127.0.0.1:3000/health
 ```
 
-### 2. Configuration
-Copy the `.env.example` file and fill in your keys:
-```bash
-cp .env.example .env
+Ports bind to loopback by default. Configure an appropriate private LAN interface
+or existing TLS reverse proxy before connecting hardware. Do not expose the
+plaintext dashboard to the internet.
+
+For **memory + MQTT notifications**, follow [SETUP_ID.md](docs/SETUP_ID.md), fill
+in `.env.mqtt.example` with your own settings/secrets, and run:
+
+```sh
+docker compose --profile mqtt up -d --build
 ```
-Available providers will depend on which environment variables (e.g., `GEMINI_API_KEY`, `DASHSCOPE_API_KEY`, `LIQUID_SERVER_URL`) are populated.
 
-### 3. Local Development
-For local testing (Ubuntu, Raspberry Pi, etc.), use the `.env.example.local` template and ensure you use your machine's local IP address instead of `localhost`.
+That template is explicitly for a trusted private LAN and uses plaintext
+MQTT/HTTP; it is not a production internet configuration. TLS on MQTT port 8883
+uses operator-supplied certificates and two distinct operator-supplied secrets.
+Test normal conversation on one device before switching it to MQTT and trying
+an idle notification. Existing devices remain on WebSocket until changed in the
+dashboard and rebooted/fetched OTA again.
 
-### 4. Running the Server
-```bash
-node app.js
+For native processes, use `npm ci --ignore-scripts`, `npm start`, and optionally
+`npm run start:gateway`; see [native/Docker configuration](docs/docker.md).
+
+## Documentation
+
+- [Indonesian step-by-step setup and rollback](docs/SETUP_ID.md)
+- [Memory limits, retention, privacy and API](docs/memory.md)
+- [Persistent notification inbox and read state](docs/inbox.md)
+- [Hermes/agent HTTP and MCP sender setup](docs/hermes-mcp.md)
+- [MQTT provisioning, notification API and result semantics](docs/notifications.md)
+- [Docker, native startup, persistence and deployment checklist](docs/docker.md)
+- [Preparing local audio recordings](notification-audio/README.md)
+- [Operator-supplied MQTT TLS certificates](certs/README.md)
+- [Local verification report and untested stages](TEST_RESULTS.md)
+
+## Provider and audio notes
+
+The existing provider adapters include Google Gemini Live, Alibaba Qwen Omni /
+Realtime, and local LFM through a compatible llama.cpp audio server. Availability
+is determined by your provider configuration; verify current models and voices
+on your own account. Memory collection/injection currently applies to completed
+Gemini transcript turns only. MCP tool support depends on the provider; local
+LFM tool support remains incomplete.
+
+Normal device speech uses mono Opus, with relay-side PCM transcoding for provider
+input/output. Idle notifications instead let the device download prerecorded Ogg
+Opus directly. The bundled gateway bridges regular conversation audio to the
+existing relay path; it is not a general-purpose MQTT broker.
+
+## Tests and deployment status
+
+```sh
+npm run check
+npm test
 ```
-Access the dashboard at `http://YOUR_IP:3000`.
 
-## Technical Details
-- **Audio Input**: 16kHz, Mono, Opus.
-- **Audio Output**: 24kHz, Mono, Opus (60ms frames).
+Local tests cover isolated SQLite/HTTP behavior, synthetic gateway protocol/audio
+traffic, notification handling and dashboard DOM interactions. They do not call
+live Gemini, connect a real Hermes agent, flash firmware or prove physical audio
+playback. Actual Docker
+build/run was unavailable in the implementation environment; the real browser
+launch was also blocked. Exact results and limitations are recorded in
+[TEST_RESULTS.md](TEST_RESULTS.md).
 
-## Logs
-Logs are automatically rotated and stored as `connection-YYYY-MM-DD.log`, tracking OTA requests, WebSocket handshakes, and LLM session lifecycles.
+No production server or device configuration is changed simply by obtaining
+this repository. Keep your old OTA/configuration and data backup until the
+one-device acceptance and rollback checks pass.
 
-## Limitations
-- Only implements the WebSocket protocol; the MQTT endpoint is a placeholder.
-- Tool calling (MCP) is currently supported for Gemini and Qwen Omni; LFM support is pending.
+## Attribution
+
+The bundled gateway derives from the MIT-licensed
+[78/xiaozhi-mqtt-gateway, commit c5e3235df8db8f06d1710074ec10e870159e0844](https://github.com/78/xiaozhi-mqtt-gateway/tree/c5e3235df8db8f06d1710074ec10e870159e0844).
+Its upstream license is retained in [gateway/LICENSE.upstream](gateway/LICENSE.upstream).
+The authenticated HTTP forwarding API and relay integration are local additions;
+this project does not rely on an assumed upstream Redis RPC service.

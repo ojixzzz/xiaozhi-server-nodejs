@@ -58,13 +58,13 @@ class GeminiProvider extends LLMProvider {
                     }
                 }
             }
-            if (content.inputTranscription && this.config.input_transcription) {
+            if (typeof content.inputTranscription?.text === 'string' && this.config.input_transcription) {
                 this.emit('input_transcription', content.inputTranscription.text);
             }
-            if (content.outputTranscription && this.config.output_transcription) {
+            if (typeof content.outputTranscription?.text === 'string' && this.config.output_transcription) {
                 this.emit('output_transcription', content.outputTranscription.text);
             }
-            if (content.turnComplete) {
+            if (content.turnComplete && !content.interrupted) {
                 this.emit('turn_complete');
             }
             if (content.interrupted) {
@@ -121,7 +121,9 @@ class GeminiProvider extends LLMProvider {
     }
 
     close() {
+        const session = this.session;
         this.session = null;
+        if (session && typeof session.close === 'function') session.close();
     }
 }
 
