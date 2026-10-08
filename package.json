@@ -6,7 +6,7 @@
   "scripts": {
     "start": "node app.js",
     "test": "node --test test/*.test.js gateway/*.test.js",
-    "check": "node --check app.js && node --check providers/gemini.js && node --check lib/memory.js && node --check lib/notifications.js && node --check lib/memory-worker.js && node --check lib/mqtt-integration.js && node --check lib/notification-audio.js && node --check gateway/server.js && node --check gateway/mqtt.js && node --check gateway/credentials.js && node --check lib/inbox.js && node --check lib/inbox-worker.js && node --check lib/inbox-tools.js && node --check lib/notification-ingress.js && node --check lib/proxy-config.js && node --check lib/device-time.js && node --check lib/remote-mcp.js && node --check lib/agent-connections.js",
+    "check": "node --check app.js && node --check providers/gemini.js && node --check lib/memory.js && node --check lib/notifications.js && node --check lib/memory-worker.js && node --check lib/mqtt-integration.js && node --check lib/notification-audio.js && node --check gateway/server.js && node --check gateway/mqtt.js && node --check gateway/credentials.js && node --check lib/inbox.js && node --check lib/inbox-worker.js && node --check lib/inbox-tools.js && node --check lib/notification-ingress.js && node --check lib/proxy-config.js && node --check lib/device-time.js && node --check lib/remote-mcp.js && node --check lib/agent-connections.js && node --check lib/mcp-endpoint.js",
     "test:browser": "RUN_BROWSER_TESTS=1 node --test test/ui.test.js",
     "start:gateway": "node gateway/server.js"
   },

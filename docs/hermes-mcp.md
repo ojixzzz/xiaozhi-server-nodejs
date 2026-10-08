@@ -3,11 +3,12 @@
 [Beranda](../README.md) · [Hubungkan agent — Indonesia](remote-mcp.md) · [English agent guide](remote-mcp.en.md)
 
 **Untuk penggunaan biasa**, buka **MCP Devices → Hubungkan agent · MCP dua arah**,
-pilih perangkat, lalu **Buat konfigurasi → Salin untuk agent**. Tidak perlu
+pilih perangkat, lalu **Buat endpoint → Salin untuk agent**. Tidak perlu
 mengikuti contoh `.env` dan HTTP di halaman ini jika memakai alur dashboard.
 Referensi Inggris berikut membahas pengiriman inbox manual untuk pengembang.
-Token pairing dashboard juga menyediakan `agent_register`; lihat panduan agent
-untuk koneksi balik dan pembatasan tool tersebut.
+Alur utama memakai `MCP_ENDPOINT` dan server stdio lewat pipe seperti calculator.
+Helper inbox memakai endpoint yang sama; `agent_register` tetap tersedia untuk
+integrasi HTTP lama. Lihat panduan agent untuk kedua arah.
 
 For agent tools called from a device and notification callbacks back to that
 device, see [two-way integration and dashboard setup](remote-mcp.md).
@@ -20,8 +21,10 @@ No external Hermes service is configured or contacted by this repository. The ex
 
 For the simplest setup, use **MCP Devices → Hubungkan agent · MCP dua arah**,
 choose a device and copy the generated setup text to the agent. It creates a
-per-device sender automatically and adds `agent_register` for the return
-direction. No environment editing is needed. The following configuration is
+per-device WebSocket endpoint automatically. Run local stdio tools through
+`mcp_pipe.py`; the inbox helper reads the same MCP_ENDPOINT. No relay environment
+editing is needed. `agent_register` is retained only for the older HTTP flow.
+The following configuration is
 the advanced alternative for manually supplied sender credentials.
 
 The environment-based ingress below is off unless at least one sender is

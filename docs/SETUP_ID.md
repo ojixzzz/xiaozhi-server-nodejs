@@ -256,17 +256,18 @@ Unread juga kedaluwarsa. Inbox penuh menolak pesan baru; read tidak menghapusnya
 2. Pilih perangkat Gemini. Isi nama agent bila ingin mengganti nama bawaan.
 3. Periksa alamat dashboard yang bisa diakses agent. Ubah jika agent berada di
    mesin lain tetapi URL dashboard memakai `localhost`.
-4. Klik **Buat konfigurasi → Salin untuk agent**.
+4. Klik **Buat endpoint → Salin untuk agent**.
 5. Tempel teks ke agent yang ingin Anda hubungkan. Token inbox dibuat otomatis;
    tidak perlu mengedit `.env` untuk pengirim ini.
-6. Agent menyediakan server MCP dan mendaftarkannya sesuai instruksi. Tools
-   otomatis dipilih untuk perangkat tersebut.
+6. Agent menjalankan server MCP lokal stdio: isi `MCP_ENDPOINT`, lalu jalankan
+   `python mcp_pipe.py agent.py` seperti calculator. Tools otomatis dipilih untuk
+   perangkat tersebut; server HTTP publik pada agent tidak diperlukan.
 7. Setelah **Terhubung dua arah** muncul, buka ulang percakapan dan coba
    permintaan sesuai tools yang tersedia pada agent.
 
 Jika agent hanya mendukung MCP client, inbox dapat digunakan tetapi koneksi
 balik masih memerlukan server/adaptor agent. [Panduan agent](remote-mcp.md)
-menjelaskan status dan pilihan pengaturan manual.
+menjelaskan pipe, helper inbox dengan endpoint yang sama, dan pengaturan manual.
 
 ### Pilihan lanjutan: pengirim HTTP/MCP manual
 

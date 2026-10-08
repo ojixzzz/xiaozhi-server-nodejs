@@ -121,23 +121,24 @@
     <div id="section-mcp" class="hidden">
         <section class="agent-setup">
             <h3>Hubungkan agent · MCP dua arah</h3>
-            <p class="help-text">Pilih perangkat Gemini, buat konfigurasi, lalu salin ke Hermes atau agent custom. Token inbox dibuat otomatis. Agent mendaftarkan server MCP-nya lewat konfigurasi ini; tools langsung aktif di perangkat pilihan.</p>
+            <p class="help-text">Pilih perangkat Gemini, buat endpoint, lalu salin MCP_ENDPOINT ke mesin agent. Jalankan server MCP lokal lewat mcp_pipe.py, seperti contoh calculator. Tools langsung aktif; agent juga bisa mengirim inbox memakai endpoint yang sama.</p>
             <form onsubmit="event.preventDefault(); createAgentConnection()">
                 <div class="form-group"><label for="agentSetupDevice">Perangkat XiaoZhi</label><select id="agentSetupDevice" required><option value="">Pilih perangkat</option></select></div>
                 <div class="form-group"><label for="agentSetupName">Nama agent</label><input id="agentSetupName" type="text" maxlength="80" value="My agent" required></div>
                 <details><summary>Alamat dashboard yang bisa diakses agent</summary><div class="form-group" style="margin-top:12px;"><label for="agentSetupPublicUrl">URL publik dashboard</label><input id="agentSetupPublicUrl" type="url" required><p class="help-text">Terisi dari alamat dashboard ini. Ubah jika agent memakai alamat domain/IP yang berbeda.</p></div></details>
-                <button id="agentSetupCreate" type="submit" style="margin-top:14px;">Buat konfigurasi</button>
+                <button id="agentSetupCreate" type="submit" style="margin-top:14px;">Buat endpoint</button>
             </form>
             <p id="agentSetupStatus" class="help-text" role="status"></p>
             <div id="agentSetupOutput" class="hidden">
+                <div class="form-group"><label for="agentSetupEndpoint">MCP_ENDPOINT</label><input id="agentSetupEndpoint" type="text" readonly spellcheck="false"></div>
                 <label for="agentSetupText">Tempel teks ini ke agent eksternal</label>
                 <textarea id="agentSetupText" readonly spellcheck="false"></textarea>
                 <div class="memory-actions">
                     <button type="button" onclick="copyAgentSetup(false)">Salin untuk agent</button>
-                    <button type="button" onclick="copyAgentSetup(true)">Salin JSON MCP saja</button>
+                    <button type="button" onclick="copyAgentSetup(true)">Salin MCP_ENDPOINT</button>
                     <button type="button" onclick="clearAgentSetup()" style="background:#6c757d;">Tutup</button>
                 </div>
-                <p class="help-text">Teks ini berisi token khusus perangkat ini. Notifikasi inbox bisa langsung dikirim. Untuk tools dua arah, agent harus menyediakan server MCP; status di bawah berubah menjadi Terhubung dua arah setelah server tersambung dan tools aktif.</p>
+                <p class="help-text">Endpoint berisi token rahasia khusus perangkat ini. Agent cukup menyediakan server MCP stdio; tidak perlu server HTTP publik. Helper xiaozhi_notify.py membaca MCP_ENDPOINT yang sama untuk mengirim inbox. Contoh tersedia di examples/mcp-endpoint.</p>
             </div>
             <ul id="agentConnectionList"></ul>
         </section>
@@ -521,7 +522,7 @@
             item.appendChild(heading);
             const status = document.createElement('p');
             status.className = 'help-text';
-            status.textContent = connection.connected && connection.tools_enabled && connection.tools_count ? `Terhubung dua arah · ${connection.tools_count} tools` : connection.connected && !connection.tools_count ? 'Server agent terhubung · belum menyediakan tools' : connection.connected ? 'Server agent terhubung · aktifkan tools di konfigurasi perangkat' : connection.status === 'waiting' ? 'Inbox siap · menunggu agent mendaftarkan server MCP' : 'Inbox siap · server agent belum terhubung';
+            status.textContent = connection.connected && connection.tools_enabled && connection.tools_count ? `Terhubung dua arah · ${connection.tools_count} tools` : connection.connected && !connection.tools_count ? 'MCP terhubung · belum menyediakan tools' : connection.connected ? 'MCP terhubung · aktifkan tools di konfigurasi perangkat' : connection.connecting ? 'Menghubungkan MCP · membaca daftar tools…' : connection.status === 'waiting' ? 'Inbox siap · menunggu koneksi MCP pipe' : 'Inbox siap · MCP belum terhubung';
             if (connection.error) status.textContent += ` · ${connection.error}`;
             item.appendChild(status);
             const copy = document.createElement('button');
@@ -538,11 +539,13 @@
     function clearAgentSetup() {
         agentSetupGeneration++;
         agentSetupExport = null;
+        document.getElementById('agentSetupEndpoint').value = '';
         document.getElementById('agentSetupText').value = '';
         document.getElementById('agentSetupOutput').classList.add('hidden');
     }
     function showAgentSetup(data) {
         agentSetupExport = data;
+        document.getElementById('agentSetupEndpoint').value = data.mcp_endpoint || '';
         document.getElementById('agentSetupText').value = data.instructions;
         document.getElementById('agentSetupOutput').classList.remove('hidden');
     }
@@ -580,9 +583,9 @@
         } catch (error) { if (generation === agentSetupGeneration) document.getElementById('agentSetupStatus').textContent = error.message; }
         finally { button.disabled = false; }
     }
-    async function copyAgentSetup(jsonOnly) {
+    async function copyAgentSetup(endpointOnly) {
         if (!agentSetupExport) return;
-        const value = jsonOnly ? JSON.stringify(agentSetupExport.mcp_config, null, 2) : agentSetupExport.instructions;
+        const value = endpointOnly ? agentSetupExport.mcp_endpoint : agentSetupExport.instructions;
         const generation = agentSetupGeneration;
         try {
             await navigator.clipboard.writeText(value);
@@ -665,7 +668,7 @@
             const tr = document.createElement('tr');
             
             const tdId = document.createElement('td');
-            tdId.textContent = data.remote ? data.name : id;
+            tdId.textContent = data.remote || data.endpoint ? data.name : id;
             if (data.remote) {
                 const url = document.createElement('p');
                 url.className = 'help-text';
@@ -720,7 +723,7 @@
             const btnDelete = document.createElement('button');
             btnDelete.textContent = 'Delete';
             btnDelete.className = 'btn-delete';
-            btnDelete.onclick = () => deleteMcp(id);
+            btnDelete.onclick = () => data.endpoint ? removeAgentConnection(data, btnDelete) : deleteMcp(id);
             tdActions.appendChild(btnDelete);
             
             tr.appendChild(tdId);

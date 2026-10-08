@@ -184,6 +184,13 @@ After editing `.env`, apply it with `docker compose --profile mqtt up -d --build
 does not recreate containers with newly changed environment values. Reboot/fetch
 OTA when changing device transport or MQTT endpoint/credential settings.
 
+
+The dashboard also hosts the reverse MCP WebSocket endpoint at
+`/mcp_endpoint/mcp/` on the same web port. No extra MCP endpoint container is
+required. If using a reverse proxy, forward WebSocket Upgrade and allow
+`/api/notifications` for the agent inbox helper. Avoid logging the endpoint's
+token query string. See [MCP pipe setup](remote-mcp.en.md).
+
 ## Persistent data and migration
 
 The Compose named volume `xiaozhi-data`, mounted at `/app/data`, retains:
@@ -197,7 +204,7 @@ The Compose named volume `xiaozhi-data`, mounted at `/app/data`, retains:
   credentials configured through **MCP Devices → Add external MCP**; see
   [two-way agent setup](remote-mcp.md)
 - `agent-connections.json`: dashboard-created pairings and private per-device
-  inbox tokens used by the copy-to-agent setup; delete connections in the
+  endpoint/inbox tokens used by the copy-to-agent setup; delete connections in the
   dashboard to revoke them
 
 The notification inbox defaults to 30-day retention and 100 records per device.

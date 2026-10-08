@@ -70,6 +70,29 @@ async function fixture(t, options = {}) {
 const rpc = (method, params, id = 1) => ({ jsonrpc: '2.0', id, method, ...(params === undefined ? {} : { params }) });
 const toolCall = (arguments_ = payload, name = 'notify_send') => rpc('tools/call', { name, arguments: arguments_ });
 
+test('paired endpoint infers its device for HTTP and internal WS publishing, but cannot change scope', async t => {
+  const pairingToken = randomBytes(32).toString('hex');
+  const sender = { name: `agent-${randomUUID()}`, token: pairingToken, defaultDeviceId: deviceId,
+    devices: new Set([deviceId]), count: 0, windowStart: 0, pending: 0, activeBeeps: 0 };
+  let active = true;
+  const f = await fixture(t, { additionalSenders: () => active ? [sender] : [] });
+  const headers = { Authorization: `Bearer ${pairingToken}` };
+  const input = { title: 'Judul', text: 'Isi', idempotency_key: 'paired-message' };
+  const first = await f.request(input, { headers });
+  assert.equal(first.status, 201);
+  assert.equal(first.body.stored, true);
+  const duplicate = await f.router.publishSender(sender, input);
+  assert.equal(duplicate.notification_id, first.body.notification_id);
+  assert.equal(duplicate.duplicate, true);
+  const schema = (await f.mcp(rpc('tools/list'), { headers })).body.result.tools[0].inputSchema;
+  assert.deepEqual(schema.required, ['text', 'idempotency_key']);
+  assert.equal((await f.request({ ...input, device_id: otherDevice }, { headers })).status, 403);
+  assert.equal((await f.request(input)).status, 400); // Env senders still require device_id.
+  active = false;
+  assert.throws(() => f.router.publishSender(sender, input), /no longer configured/);
+  assert.equal(f.inbox.entries.size, 1);
+});
+
 test('dashboard senders work without env edits, expose registration only to their token and revoke immediately', async t => {
   const pairingToken = randomBytes(32).toString('hex');
   const paired = { name: `agent-${randomUUID()}`, token: pairingToken, devices: new Set([deviceId]), count: 0, windowStart: 0, pending: 0, activeBeeps: 0 };

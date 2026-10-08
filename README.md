@@ -45,7 +45,7 @@ Redis atau broker MQTT tambahan untuk jalur bawaan.
 Server dan percakapan Gemini perlu sudah berjalan sebelum mengikuti langkah ini.
 
 1. Login dashboard, lalu buka **MCP Devices → Hubungkan agent · MCP dua arah**.
-2. Pilih perangkat, kemudian klik **Buat konfigurasi**.
+2. Pilih perangkat, kemudian klik **Buat endpoint**.
 3. Klik **Salin untuk agent** dan tempel teksnya ke agent eksternal.
 4. Setelah status **Terhubung dua arah** muncul, buka ulang percakapan XiaoZhi.
 
@@ -53,10 +53,18 @@ Dashboard membuat token inbox khusus perangkat secara otomatis. Anda tidak perlu
 mengedit `.env` untuk membuat pengirim ini. Token adalah kunci akses; berikan teks
 konfigurasi hanya kepada agent yang memang ingin Anda hubungkan.
 
-Agent harus mendukung koneksi MCP dan menyediakan **server MCP** untuk tools
-koneksi balik. Jika hanya mendukung MCP client, agent masih bisa mengirim inbox,
-tetapi perlu server/adaptor tambahan agar bisa menerima permintaan dari XiaoZhi.
-Lihat [panduan agent](docs/remote-mcp.md) untuk penjelasan status dan langkah lengkap.
+Agent menjalankan **server MCP lokal melalui stdio**, lalu menyambung ke endpoint
+WebSocket relay lewat pipe seperti contoh `mcp-calculator`:
+
+```sh
+export MCP_ENDPOINT='URL_LENGKAP_DARI_DASHBOARD'
+python mcp_pipe.py agent.py
+```
+
+Tidak perlu server HTTP publik pada agent. Helper `xiaozhi_notify.py` memakai
+endpoint yang sama untuk kirim inbox, tanpa token/device tambahan. Contoh siap
+pakai: [examples/mcp-endpoint](examples/mcp-endpoint/README.md).
+[Panduan agent](docs/remote-mcp.md) menjelaskan pemasangan dan kedua arah ini.
 
 ## Cara notifikasi bekerja
 
@@ -119,7 +127,7 @@ sebelum memindahkan server.
 | Gejala | Langkah awal |
 | --- | --- |
 | Pesan tersimpan tetapi tidak berbunyi | Periksa perangkat online/idle, pilihan MQTT, dan alamat audio |
-| “Inbox siap · menunggu agent…” | Agent belum mendaftarkan server MCP untuk koneksi balik |
+| “Inbox siap · menunggu koneksi MCP pipe” | Isi MCP_ENDPOINT lalu jalankan pipe pada mesin agent |
 | Server agent terhubung tetapi tools belum aktif | Periksa pilihan tools di konfigurasi perangkat dan buka ulang percakapan |
 | Pesan masih unread | Respons judul mungkin terputus; coba lagi atau gunakan **Mark read** |
 | Pengaturan ditolak karena token perangkat | Perangkat membutuhkan token sendiri; minta administrator memeriksa provisioning |

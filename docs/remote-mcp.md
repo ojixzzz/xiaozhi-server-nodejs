@@ -2,253 +2,264 @@
 
 **Bahasa Indonesia** · [English](remote-mcp.en.md) · [Semua dokumentasi](README.md)
 
-Dengan koneksi ini, **agent bisa mengirim notifikasi ke XiaoZhi**, dan **XiaoZhi
-bisa meminta agent melakukan tugas atau mengirim balasan** melalui tools agent.
-Misalnya: minta laporan lewat suara, agent mengerjakan, lalu hasilnya masuk inbox.
+Cukup salin **MCP_ENDPOINT** dari dashboard, lalu jalankan server MCP lokal agent
+lewat `mcp_pipe.py`. Polanya sama seperti proyek `xiaozhi-esp32-server` dan contoh
+`mcp-calculator`: agent menyambung ke relay lewat WebSocket, sedangkan tools di
+mesin agent berjalan melalui stdio. Agent tidak perlu membuka port HTTP publik.
 
-Jika Anda hanya ingin membaca notifikasi, lihat [panduan pengguna](panduan-pengguna.md).
-Pemasangan server ada di [panduan instalasi](SETUP_ID.md).
+Dua arah yang tersedia:
 
-## Yang perlu disiapkan
-
-- Server XiaoZhi dengan dashboard terbaru yang sudah dapat Anda buka.
-- Perangkat approved (sudah disetujui administrator) dengan token sendiri dan percakapan Gemini yang berfungsi.
-- Agent eksternal yang mendukung MCP. Untuk menerima permintaan dari XiaoZhi,
-  agent juga perlu menyediakan **server MCP**, yaitu layanan yang menyediakan tools.
-- Alamat relay yang bisa diakses agent; alamat server agent juga harus bisa
-  diakses relay untuk koneksi balik.
-
-**MCP client dan MCP server berbeda.** Client memakai tools, server menyediakan
-tools. Agent yang hanya bisa memakai MCP client dapat mengirim inbox, tetapi
-belum bisa menerima permintaan dari XiaoZhi tanpa server/adaptor tambahan.
-Tidak ada endpoint Hermes nyata yang disertakan dalam paket ini.
-
-## Cara paling mudah: salin dari dashboard
-
-1. Login dashboard dan buka **MCP Devices → Hubungkan agent · MCP dua arah**.
-2. Pilih perangkat Gemini. Nama agent sudah terisi; ganti jika diperlukan.
-3. Alamat relay diambil dari alamat dashboard. Jika agent memerlukan alamat
-   lain, buka **Alamat dashboard yang bisa diakses agent** lalu ubah URL publiknya.
-4. Klik **Buat konfigurasi**.
-5. Klik **Salin untuk agent**, lalu tempel teks lengkap ke agent eksternal.
-6. Agent mengikuti instruksi tersebut: memasang koneksi MCP ke relay dan
-   mendaftarkan server MCP-nya untuk koneksi balik.
-7. Setelah status **Terhubung dua arah** muncul, buka ulang percakapan XiaoZhi
-   supaya tools terbaru dimuat.
-
-Tidak perlu mengedit `.env` atau memasukkan token inbox sendiri. Dashboard
-membuat token baru yang hanya mengizinkan agent mengirim ke perangkat pilihan.
-Pengaturan ini langsung berlaku; tidak membutuhkan restart server.
-
-Teks yang disalin berisi token rahasia. Tempel hanya ke agent yang ingin Anda
-hubungkan. **Salin JSON MCP saja** tersedia jika aplikasi meminta konfigurasi
-`mcpServers` di editor pengaturannya; format editor bisa berbeda antar aplikasi.
-Jika tombol salin tidak didukung browser, teks akan dipilih agar bisa disalin
-menggunakan Ctrl+C / Cmd+C.
-
-## Apa yang dikerjakan agent setelah menerima teks itu?
-
-Teks konfigurasi sudah memuat alamat relay, token inbox, ID perangkat, serta
-petunjuk untuk dua kemampuan berikut:
-
-| Kemampuan | Cara agent menggunakannya |
+| Arah | Kegunaan |
 | --- | --- |
-| Mengirim ke inbox | Memanggil `notify_send` dengan judul, isi, ID perangkat, dan ID pesan unik |
-| Menyediakan tools untuk XiaoZhi | Menjalankan server MCP agent, lalu memanggil `agent_register` dengan URL server dan token server agent jika diperlukan |
+| XiaoZhi → agent | Gemini memanggil tools lokal agent untuk tugas atau balasan |
+| Agent → XiaoZhi | Agent mengirim judul dan isi ke inbox, termasuk hasil tugas setelah percakapan selesai |
 
-Relay menemukan tools yang disediakan agent dan otomatis memilihnya untuk
-perangkat yang dipasangkan. Anda tidak perlu mencentang tools satu per satu
-untuk koneksi yang dibuat dengan alur sederhana ini.
+## 1. Salin endpoint dari dashboard
 
-Instruksi siap salin tidak dapat menambahkan kemampuan server pada aplikasi
-agent yang memang belum memilikinya. Jika agent hanya mendukung MCP client,
-siapkan server/adaptor agent terlebih dahulu. Koneksi inbox tetap bisa digunakan.
+Server dan percakapan Gemini perlu sudah berfungsi. Perangkat harus **approved**
+dan memiliki token sendiri.
 
-## Memahami status dashboard
+1. Buka **MCP Devices → Hubungkan agent · MCP dua arah**.
+2. Pilih perangkat dan isi nama agent bila diperlukan.
+3. Periksa **Alamat dashboard yang bisa diakses agent**. Jika agent ada di mesin
+   lain, gunakan domain/IP relay yang dapat dijangkau, bukan `localhost` mesin agent.
+4. Klik **Buat endpoint**, lalu **Salin MCP_ENDPOINT**. **Salin untuk agent**
+   menyalin petunjuk lengkap jika Anda ingin agent menyiapkan integrasinya.
+5. Simpan endpoint sebagai environment pada mesin agent.
 
-| Status | Artinya | Langkah berikutnya |
-| --- | --- | --- |
-| **Inbox siap · menunggu agent mendaftarkan server MCP** | Token inbox tersedia; koneksi balik belum terdaftar | Tempel konfigurasi ke agent dan minta menyelesaikan registrasi server MCP |
-| **Inbox siap · server agent belum terhubung** | Endpoint terdaftar tetapi relay belum bisa terhubung | Periksa server agent, URL, transport, dan tokennya |
-| **Server agent terhubung · belum menyediakan tools** | Koneksi hidup tetapi daftar tools kosong | Agent perlu menyediakan tools, lalu registrasi ulang atau refresh tools |
-| **Server agent terhubung · aktifkan tools di konfigurasi perangkat** | Koneksi hidup tetapi tools tidak aktif untuk perangkat | Periksa perangkat approved, Gemini, token khusus, serta pilihan tools pada **Config** |
-| **Terhubung dua arah · … tools** | Server agent tersambung dan tools aktif untuk perangkat | Buka ulang percakapan lalu coba permintaan yang menggunakan tools tersebut |
-
-Relay mencoba menghubungkan ulang server agent yang offline setiap 30 detik.
-Status terhubung membuktikan koneksi dan penemuan tools, bukan bahwa semua tugas
-agent akan berhasil. Hasil tugas tetap perlu diperiksa.
-
-## Mencoba dan memutus koneksi
-
-Untuk mencoba, minta agent mengirim satu pesan percobaan melalui `notify_send`.
-Periksa inbox perangkat di **Memory & Notify**, lalu sapa perangkat untuk mendengar
-judulnya. Beep memerlukan perangkat idle dan jalur MQTT yang berfungsi.
-
-Selanjutnya, ucapkan permintaan sesuai tool yang benar-benar tersedia pada agent,
-misalnya membuat laporan jika agent menyediakan tool tugas. Tools tugas, status,
-dan balasan adalah kemampuan agent; relay tidak membuatnya sendiri.
-
-**Hapus koneksi** mencabut token inbox, menghapus koneksi balik, dan melepas tools
-dari perangkat. Pesan yang sudah tersimpan tetap ada sampai kedaluwarsa.
-**Tutup** pada teks konfigurasi hanya menyembunyikan teks; koneksi tetap aktif.
-Tombol **Konfigurasi untuk agent** menampilkan kembali konfigurasi yang sama.
-
-Jika Anda hanya menghapus server di bagian konfigurasi manual, token inbox dari
-pairing masih aktif. Hapus koneksi agent pada panel sederhana untuk mencabutnya.
-
-## Jika koneksi belum berhasil
-
-| Masalah | Yang diperiksa |
-| --- | --- |
-| Agent tidak bisa mencapai relay | Gunakan domain/IP yang dapat dicapai agent, bukan `localhost` milik mesin lain |
-| Relay tidak bisa mencapai agent | URL server agent harus dapat dicapai dari mesin/container relay |
-| Token ditolak | Pisahkan token inbox relay dari token server agent; gunakan token yang tepat untuk masing-masing arah |
-| Endpoint memakai HTTP | HTTPS diterima secara default; HTTP lokal dan aturan LAN dijelaskan di bagian manual di bawah |
-| Agent sudah terhubung tetapi XiaoZhi tidak melihat tools | Gunakan Gemini, periksa pilihan tools, dan buka percakapan baru |
-| Menu baru belum muncul | Pastikan image/source yang dijalankan mencakup dashboard terbaru; refresh halaman setelah pembaruan |
-
-Pada Docker biasa, `localhost` di container berarti container itu sendiri.
-Jika memakai jaringan host, perilakunya mengikuti jaringan host. Ini berbeda
-dari alamat `localhost` pada komputer agent yang berada di tempat lain.
-
-## Konfigurasi manual — untuk administrator
-
-Bagian ini alternatif bila Anda sudah memiliki server MCP dan ingin mengatur
-koneksinya sendiri. Untuk penggunaan biasa, gunakan alur salin di atas.
-
-1. Buka **MCP Devices → Konfigurasi MCP manual / lanjutan → Add external MCP**.
-2. Isi nama, URL server agent, transport, dan Bearer token bila diperlukan.
-   Pilih **Streamable HTTP** untuk server modern; **SSE** untuk server yang memakai
-   transport HTTP+SSE lama.
-3. Klik **Save & connect**. Lihat status dan **View Tools**.
-4. Buka **Xiaozhi Devices → Config → Expose Tools from MCP Devices**, pilih koneksi,
-   lalu simpan dan buka ulang percakapan.
-
-Pengaturan tetap disimpan meskipun agent offline. **Reconnect** atau **Refresh tools** mencoba koneksi/penemuan tools secara langsung. Menyimpan, memperbarui,
-atau menghapus server menutup percakapan yang memakai koneksi tersebut agar
-definisi tools dapat dimuat ulang.
-
-URL diterima bila memakai HTTPS atau HTTP loopback (`localhost`, `127.0.0.1`,
-`::1`). Untuk HTTP pada LAN/container tepercaya, administrator perlu mengaktifkan
-`MCP_ALLOW_HTTP=true` dan menerapkan ulang konfigurasi server. URL tidak boleh
-berisi username/password, parameter query, atau fragment. Masukkan token pada
-kolom terpisah. Kolom token kosong saat mengedit mempertahankan token lama;
-**Remove saved token** menghapusnya.
-
-Alur manual ini hanya membuat koneksi keluar. Untuk notifikasi masuk, buat
-pairing lewat dashboard atau atur pengirim env sesuai [referensi HTTP/MCP](hermes-mcp.md).
-`NOTIFY_SENDERS_JSON=[]` menonaktifkan pengirim dari env saja; pairing dashboard
-harus dihapus dari dashboard untuk mencabut tokennya.
-
-Koneksi ini tidak menjalankan command lokal `stdio` dan tidak menyediakan login
-OAuth, sampling, pembacaan resource, atau elicitation.
-
-## Penyimpanan konfigurasi
-
-Pairing dan token inbox disimpan di `DATA_DIR/agent-connections.json`.
-URL server agent dan token koneksi balik disimpan di
-`DATA_DIR/remote-mcp-servers.json`. Keduanya berada di volume data yang sama dengan
-inbox; izin file adalah `0600` pada sistem POSIX. File bersifat privat tetapi
-bukan terenkripsi. Cadangan volume juga memuat token tersebut.
-
-API daftar/status tidak mengembalikan token. Token inbox hanya diberikan pada
-pembuatan/export yang diminta administrator; dashboard membersihkan teksnya saat
-ditutup atau logout. Konfigurasi rusak tidak otomatis diganti dengan file kosong.
-Pengaturan ingress env yang tidak valid tetap menolak akses; perbaiki sebelum
-membuat koneksi agent baru.
-
-## Referensi pengembang agent
-
-Agent menyediakan MCP server nyata untuk `initialize`, `tools/list`, dan
-`tools/call`. Relay memakai `@modelcontextprotocol/sdk` untuk koneksi keluar,
-termasuk respons JSON/SSE dan session ID. Referensi:
-[SDK client](https://github.com/modelcontextprotocol/typescript-sdk/blob/v1.x/docs/client.md)
-dan [SDK server](https://github.com/modelcontextprotocol/typescript-sdk/blob/v1.x/docs/server.md).
-
-Tool `agent_register` hanya tersedia bagi token pairing dashboard. Argumennya:
-
-```json
-{
-  "url": "https://agent.example.com/mcp",
-  "transport": "streamable-http",
-  "token": "TOKEN_SERVER_AGENT"
-}
+```sh
+export MCP_ENDPOINT='wss://relay.example.com/mcp_endpoint/mcp/?token=TOKEN_DARI_DASHBOARD'
 ```
 
-Ganti contoh dengan endpoint nyata. `transport` opsional dan defaultnya
-`streamable-http`; `token` opsional, terpisah dari token inbox. Jangan mengirim
-`device_id` atau ID server pada registrasi: relay mengambil scope dari pairing.
-Registrasi hanya memperbarui koneksi milik pairing tersebut. Jika endpoint offline,
-respons dapat berisi `registered: true` dan `connected: false`.
+Contoh di atas adalah placeholder: salin URL lengkap yang dibuat dashboard.
+URL ini **berisi token rahasia khusus satu perangkat**; jangan masukkan ke repo,
+log, atau tangkapan layar publik. HTTPS dashboard menghasilkan `wss://`; HTTP
+menghasilkan `ws://`. Gunakan TLS untuk koneksi melalui internet.
 
-Contoh tools bisnis yang **harus diimplementasikan oleh agent**, bukan tools
-bawaan relay:
+Tidak perlu mengubah `.env` server atau melakukan restart hanya untuk membuat
+pairing. Pengaturan agent dan token disimpan pada volume data server.
 
-| Tool contoh | Argumen | Hasil yang disarankan |
-| --- | --- | --- |
-| `agent_submit_task` | `instruction` | `{ "accepted": true, "job_id": "job-123" }` |
-| `agent_task_status` | `job_id` | Status tugas dan kemajuan singkat |
-| `agent_reply` | `notification_id`, `message` | Konfirmasi penerimaan balasan pengguna |
+## 2. Jalankan MCP lokal
 
-Setiap tool menyediakan `inputSchema` bertipe object. Maksimal 64 tools unik per
-server, dengan schema maksimal 8.000 karakter JSON masing-masing. Gunakan schema
-yang kompatibel dengan Gemini.
+Jika sudah memakai proyek `mcp-calculator`, jalankan perintah yang sama di folder
+proyek tersebut setelah mengisi environment:
 
-Relay memasukkan konteks pemanggil dari autentikasi perangkat, bukan pilihan model:
+```sh
+python mcp_pipe.py calculator.py
+```
+
+Pipe dari contoh tersebut dapat dipakai tanpa mengubah framing JSON-RPC-nya.
+Untuk contoh yang disertakan dalam repo ini, buka
+[examples/mcp-endpoint](../examples/mcp-endpoint/README.md), gunakan Python **3.11+**,
+lalu jalankan:
+
+```sh
+cd examples/mcp-endpoint
+python -m venv .venv
+source .venv/bin/activate
+python -m pip install -r requirements.txt
+export MCP_ENDPOINT='URL_LENGKAP_DARI_DASHBOARD'
+python mcp_pipe.py agent.py
+```
+
+`agent.py` menyediakan contoh `agent_echo` dan `agent_notify`. Ganti fungsi contoh
+dengan integrasi Hermes/agent Anda. Tidak ada instance Hermes atau antrean tugas
+nyata yang otomatis disiapkan oleh relay.
+
+Server MCP agent perlu menyediakan tools melalui **stdio**: input/output JSON-RPC
+per baris. Tools bisa dibuat dengan FastMCP seperti calculator. Program Node.js
+atau command lain juga bisa dijalankan:
+
+```sh
+python mcp_pipe.py -- node /path/to/agent-mcp-server.js
+```
+
+Tanpa argumen, pipe membaca `mcp_config.json` atau file pada `MCP_CONFIG`.
+Setiap server stdio mendapat koneksi sendiri ke endpoint yang sama; nama tools
+yang sama tidak saling menimpa. Contoh pipe bawaan hanya menjalankan stdio;
+HTTP/SSE lokal memerlukan adaptor, atau gunakan pengaturan HTTP lanjutan di bawah.
+
+Setelah tools ditemukan, relay otomatis memilih koneksi untuk perangkat pasangan.
+Tunggu **Terhubung dua arah · … tools**, lalu buka ulang percakapan XiaoZhi.
+Saat koneksi/tools berubah, percakapan yang memakai koneksi ditutup agar tidak
+memakai definisi lama. Jika Anda mengubah tools saat agent berjalan, restart pipe
+untuk menemukan daftar tools baru.
+
+## 3. Agent mengirim inbox memakai endpoint yang sama
+
+Calculator asli hanya menyediakan tool hitung; menjalankannya tidak mengirim
+notifikasi. Untuk mengirim hasil dari agent custom, gunakan helper bawaan:
+
+```python
+from xiaozhi_notify import notify_send
+
+receipt = notify_send(
+    title="Laporan selesai",
+    text="Ringkasan laporan sudah tersedia.",
+    idempotency_key="job-123-complete",
+)
+```
+
+Helper membaca **MCP_ENDPOINT yang sama**, mengambil token, lalu mengirim lewat
+HTTP(S) ke `/api/notifications` pada relay. `device_id` diambil dari pairing;
+tidak perlu alamat, token, atau konfigurasi tambahan. Helper tetap dapat dipakai
+setelah percakapan suara selesai, bahkan ketika koneksi tools sedang offline.
+Untuk fungsi async, jalankan helper sinkron ini lewat `asyncio.to_thread`.
+
+Untuk mengirim satu pesan secara eksplisit dari terminal:
+
+```sh
+python xiaozhi_notify.py --title 'Laporan selesai' --text 'Hasil siap dibaca.' --idempotency-key 'job-123-complete'
+```
+
+`stored: true` mengonfirmasi pesan sudah disimpan, bukan bahwa beep sudah terdengar.
+Simpan `notification_id` untuk menghubungkan balasan pengguna ke pesan asli.
+Gunakan key unik per pesan; jika pengiriman belum pasti, periksa inbox dan ulangi
+hanya dengan **key serta isi yang sama**. Helper tidak mengulang pengiriman otomatis.
+
+Inbox dan pengingat tetap bekerja seperti sebelumnya: beep dicoba setiap satu
+menit hingga read, berhenti sementara selama percakapan, dan sapaan “halo”, “apa”,
+atau “ada apa” membacakan **judul dahulu**. Detail ada di
+[panduan pengguna](panduan-pengguna.md).
+
+## Memahami status dan masalah umum
+
+| Status / gejala | Langkah berikutnya |
+| --- | --- |
+| **Inbox siap · menunggu koneksi MCP pipe** | Isi MCP_ENDPOINT dan jalankan pipe di mesin agent |
+| **Menghubungkan MCP · membaca daftar tools…** | Tunggu handshake; periksa stderr server jika tidak selesai |
+| **MCP terhubung · belum menyediakan tools** | Tambahkan tools pada server MCP lalu restart pipe |
+| **MCP terhubung · aktifkan tools di konfigurasi perangkat** | Periksa Gemini, token perangkat dan pilihan tools pada Config |
+| **Terhubung dua arah · … tools** | Buka percakapan baru dan gunakan tool yang tersedia |
+| **Inbox siap · MCP belum terhubung** | Periksa endpoint, jaringan, proses agent dan pesan status |
+| Sambungan ditolak | Perangkat harus approved, bertoken khusus, memakai Gemini; token pairing belum dicabut |
+| Tools tidak terlihat setelah perubahan | Restart pipe dan buka ulang percakapan |
+| WebSocket gagal melalui domain | Reverse proxy harus meneruskan Upgrade WebSocket ke port dashboard |
+
+Pipe bawaan mencoba menyambung kembali dengan jeda 1–60 detik. Pemanggilan tool
+lama tidak diulang otomatis karena agent mungkin sudah menjalankannya. Perangkat
+XiaoZhi dan agent tidak harus berada dalam LAN yang sama; agent cukup bisa
+menjangkau relay. `localhost` pada container/komputer lain menunjuk mesin itu sendiri.
+
+**Hapus koneksi** mencabut token endpoint dan inbox, menutup semua pipe milik
+pairing, serta melepas tools dari perangkat. Pesan yang tersimpan tetap ada hingga
+retensinya habis. **Tutup** hanya menyembunyikan teks. **Konfigurasi untuk agent**
+menampilkan endpoint yang sama tanpa mengganti token.
+
+## Referensi pengembang: WebSocket dan konteks tool
+
+Endpoint utama: `/mcp_endpoint/mcp/?token=TOKEN_PAIRING`. Token Bearer di header
+juga diterima untuk bridge custom; bila header dan query sama-sama diberikan,
+keduanya harus cocok. Endpoint ini memakai transport WebSocket khusus yang
+mengikuti pipe calculator. Ia tidak menggantikan endpoint MCP Streamable HTTP.
+
+Relay bertindak sebagai MCP client melalui SDK: `initialize`,
+`notifications/initialized`, `tools/list` (termasuk pagination), lalu `tools/call`.
+Satu frame teks berisi satu object JSON-RPC. Payload maksimal 256 KiB; handshake
+maksimal 10 detik. Maksimal 16 provider bersamaan dan 64 tools per pairing,
+64 provider global, schema tool maksimal 8.000 karakter JSON.
+
+Nama tools diberi alias internal agar tidak bentrok; nama asli dikirim ke agent.
+Konteks pemanggil berasal dari autentikasi perangkat:
 
 ```json
 {
-  "name": "agent_submit_task",
-  "arguments": { "instruction": "Siapkan ringkasan laporan" },
-  "_meta": {
-    "xiaozhi/device_id": "aa:bb:cc:dd:ee:ff",
-    "xiaozhi/session_id": "ID_SESI_PERCAKAPAN"
+  "jsonrpc": "2.0",
+  "id": 123,
+  "method": "tools/call",
+  "params": {
+    "name": "agent_submit_task",
+    "arguments": { "instruction": "Siapkan laporan" },
+    "_meta": {
+      "xiaozhi/device_id": "aa:bb:cc:dd:ee:ff",
+      "xiaozhi/session_id": "ID_SESI_PERCAKAPAN"
+    }
   }
 }
 ```
 
-Agent memeriksa perangkat tersebut terhadap scope-nya sendiri. Untuk tugas yang
-lama, kembalikan job ID/status diterima dalam 30 detik, lanjutkan di antrean agent,
-lalu kirim hasil menggunakan `notify_send`:
+`agent_submit_task`, `agent_task_status`, dan `agent_reply` adalah contoh tools
+bisnis yang perlu dibuat agent sendiri. Agent harus memeriksa scope perangkatnya.
+Untuk pekerjaan lama, kembalikan status `accepted` dan `job_id` dalam 30 detik,
+kerjakan di antrean agent, lalu kirim hasil melalui helper inbox. Maksimal empat
+pemanggilan bersamaan per provider; hasil dibatasi 6.000 karakter JSON dan dianggap
+data eksternal. Error atau timeout memiliki hasil eksekusi tidak pasti, tidak
+boleh dianggap sukses atau diulang otomatis.
+
+Bridge WebSocket custom juga dapat mengirim inbox **langsung pada sambungan sama**:
 
 ```json
 {
-  "device_id": "aa:bb:cc:dd:ee:ff",
-  "title": "Ringkasan laporan selesai",
-  "text": "Hasil ringkasan untuk job-123 sudah tersedia.",
-  "idempotency_key": "job-123-complete"
+  "jsonrpc": "2.0",
+  "id": "notify-job-123",
+  "method": "xiaozhi/notify",
+  "params": {
+    "title": "Laporan selesai",
+    "text": "Hasil siap dibaca.",
+    "idempotency_key": "job-123-complete"
+  }
 }
 ```
 
-Simpan `notification_id` dari hasil pengiriman untuk menghubungkan balasan dengan
-pesan asli. Jika hasil pengiriman tidak pasti, ulangi hanya dengan key dan isi
-yang sama. Key mencegah pembuatan pesan ganda selama record masih disimpan.
-Callback tidak bergantung pada percakapan suara yang mengawali tugas.
+Alternatif framing: `tools/call` dengan `params.name: "notify_send"` dan payload
+pada `params.arguments`. Ini **ekstensi relay untuk arah server → client**, bukan
+fitur bawaan setiap MCP stdio SDK. Jangan memasukkan request custom ini ke stdout
+FastMCP tanpa bridge yang bisa memisahkan request/response. Untuk server stdio
+biasa, gunakan helper HTTP di atas.
 
-Nama tools diberi scope internal agar tidak bentrok; nama asli dikirim ke agent.
-Hasil tools dibatasi 6.000 karakter JSON dan diperlakukan sebagai data eksternal.
-Maksimal empat pemanggilan bersamaan per server. Error/timeout bukan keberhasilan;
-relay tidak mengulang aksi otomatis, karena agent mungkin masih menjalankannya.
+Relay membalas ID yang sama dengan `result.content`, `result.structuredContent`
+(receipt), dan `result.isError`. Request inbox wajib ber-ID; fire-and-forget tidak
+disimpan. Device diambil dari token; ID device berbeda ditolak. Token yang dicabut
+menolak kiriman baru. Duplikasi pesan ditangani oleh `idempotency_key` inbox.
 
-## API dashboard — untuk pengembang
+## HTTP/SSE lanjutan dan integrasi lama
 
-Endpoint berikut memerlukan sesi admin dan password admin kuat. Perubahan
-memerlukan JSON serta header `X-Requested-With: XiaozhiDashboard`.
-Respons memakai `Cache-Control: no-store`.
+Integrasi lama tetap tersedia. Gunakan bagian
+**MCP Devices → Konfigurasi MCP manual / lanjutan → Add external MCP** bila agent
+sudah menyediakan server Streamable HTTP atau SSE yang dapat dijangkau relay.
+Simpan nama, URL, transport dan token server terpisah. Pilih koneksi pada
+**Xiaozhi Devices → Config → Expose Tools from MCP Devices**, lalu buka ulang
+percakapan. **Reconnect / Refresh tools** memuat ulang tools.
 
-| Endpoint | Fungsi |
+HTTPS dan HTTP loopback diterima. HTTP LAN/container memerlukan `MCP_ALLOW_HTTP=true`.
+URL server HTTP tidak boleh memuat kredensial, query atau fragment. Kolom token
+kosong saat edit mempertahankan token lama; **Remove saved token** menghapusnya.
+Pengaturan lanjutan ini membuat koneksi keluar saja; inbox memakai pairing dashboard
+atau pengirim env pada [referensi ingress HTTP/MCP](hermes-mcp.md).
+
+Export admin tetap menyertakan `mcp_config` HTTP untuk klien lama, menuju
+`/mcp/notifications`. Token pairing tersebut tetap dapat memakai `agent_register`
+dengan `{url,transport?,token?}` untuk memilih server HTTP-nya otomatis. Token
+server agent harus terpisah dari token pairing. **Alur pipe tidak memerlukan
+agent_register**. Menghapus server HTTP manual tidak mencabut token pairing;
+hapus pairing di panel utama untuk mencabut seluruh akses.
+
+## Penyimpanan, proxy, dan API admin
+
+`DATA_DIR/agent-connections.json` menyimpan pairing serta token endpoint/inbox;
+`DATA_DIR/remote-mcp-servers.json` menyimpan koneksi HTTP lanjutan. Izin POSIX
+`0600`, privat tetapi tidak terenkripsi. Cadangan volume memuat token. Pairing
+lama dapat diexport ulang untuk mendapatkan URL WebSocket memakai token yang sama;
+tidak perlu migrasi inbox atau volume. API status tidak mengembalikan token.
+Dashboard menghapus teks rahasia saat ditutup/logout.
+
+Endpoint memakai port dashboard yang sama; tidak perlu service endpoint tambahan.
+Proxy harus meneruskan `/mcp_endpoint/mcp/` dan header Upgrade. Hindari mencatat
+query token dalam access log proxy. Helper perlu akses `/api/notifications` juga.
+
+| Endpoint admin | Fungsi |
 | --- | --- |
-| `GET /api/agent_connections` | Daftar pairing/status tanpa token |
-| `POST /api/agent_connections` | `{name,device_id,public_url}`; membuat pairing dan mengembalikan instruksi + `mcp_config` |
-| `POST /api/agent_connections/:id/export` | Menyalin ulang konfigurasi yang sama |
-| `DELETE /api/agent_connections/:id` | Mencabut token serta menghapus koneksi balik/tools |
-| `GET /api/remote_mcp_servers` | Daftar server keluar tanpa token |
-| `POST /api/remote_mcp_servers` | `{id?,name,url,transport,token?,enabled?}`; membuat/mengedit server |
-| `POST /api/remote_mcp_servers/:id/connect` | Koneksi ulang dan penemuan tools |
-| `DELETE /api/remote_mcp_servers/:id` | Menghapus server dan pilihan tools perangkat |
+| `GET /api/agent_connections` | Status tanpa token, termasuk jumlah tools/provider |
+| `POST /api/agent_connections` | `{name,device_id,public_url}` → pairing, `mcp_endpoint`, `environment`, instruksi, dan export HTTP lama |
+| `POST /api/agent_connections/:id/export` | Menampilkan ulang konfigurasi yang sama |
+| `DELETE /api/agent_connections/:id` | Mencabut endpoint/inbox dan tools |
+| `GET /api/remote_mcp_servers` | Daftar server HTTP lanjutan tanpa token |
+| `POST /api/remote_mcp_servers` | `{id?,name,url,transport,token?,enabled?}` |
+| `POST /api/remote_mcp_servers/:id/connect` | Koneksi ulang HTTP dan penemuan tools |
+| `DELETE /api/remote_mcp_servers/:id` | Menghapus server HTTP dan pilihan tools |
 
-Pada edit server, `token: null` menghapus token; string kosong mempertahankannya.
-Server keluar juga muncul di `GET /api/mcp_devices` untuk pemilihan tools yang
-sama dengan penyedia WebSocket lama. Pengingat, pembacaan judul, dan perubahan
-MCP terbaru belum menjalani tes lokal pada iterasi ini. Status koneksi perlu
-diverifikasi dengan agent, Gemini, dan perangkat yang benar-benar digunakan.
+API memerlukan sesi admin dengan password kuat; mutasi memerlukan JSON dan
+`X-Requested-With: XiaozhiDashboard`. Respons admin memakai `Cache-Control: no-store`.
+Sampling, resource, OAuth, dan elicitation tidak disediakan oleh integrasi ini.
+Tes untuk transport dan scope tersedia di source, tetapi perubahan ini belum
+menjalani tes/build lokal atau verifikasi dengan agent/perangkat nyata.

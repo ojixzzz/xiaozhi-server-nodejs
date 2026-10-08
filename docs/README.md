@@ -26,6 +26,7 @@ mengulang instalasi hanya untuk membuat koneksi agent di dashboard.
 | --- | --- |
 | [Memori](memory.md) | Apa yang disimpan, privasi, batas, dan API memori |
 | [Inbox](inbox.md) | Penyimpanan, read/unread, retensi, dan API inbox |
+| [Contoh pipe dan agent](../examples/mcp-endpoint/README.md) | MCP_ENDPOINT, calculator lokal, dan helper inbox |
 | [HTTP/MCP untuk pengirim](hermes-mcp.md) | Pengirim manual, format pesan, dan protokol MCP |
 | [MQTT dan audio](notifications.md) | Gateway, provisioning, API audio, dan arti hasil pengiriman |
 | [Gateway](../gateway/README.md) | Pengaturan jaringan dan protokol gateway |
@@ -47,13 +48,13 @@ penjelasan fiturnya tersedia di panduan Indonesia di atas.
 | MCP | Cara standar agar aplikasi AI dapat menggunakan tools aplikasi lain |
 | MCP client | Aplikasi yang memanggil tools; misalnya agent saat mengirim inbox |
 | MCP server | Aplikasi yang menyediakan tools; dibutuhkan agent untuk koneksi balik |
-| Endpoint / URL | Alamat layanan yang dihubungi, misalnya `https://agent.example.com/mcp` |
+| Endpoint / URL | Alamat layanan yang dihubungi, misalnya URL WebSocket MCP_ENDPOINT dari dashboard |
 | Token / secret | Kunci akses rahasia; berbeda dari nama perangkat atau URL |
 | API key | Kunci akses akun provider AI, bukan token untuk agent atau perangkat |
 | Inbox | Kotak masuk pesan teks yang disimpan oleh server |
 | Unread / read | Belum dibaca / sudah ditandai dibaca; bukan status penghapusan |
 | MQTT | Sambungan yang memungkinkan server mengirim tanda beep ke perangkat idle |
-| WebSocket | Sambungan yang digunakan untuk percakapan suara biasa |
+| WebSocket | Sambungan untuk percakapan suara dan pipe MCP agent |
 | Approved / pending | Perangkat sudah disetujui / masih menunggu persetujuan administrator |
 | Idle / offline | Terhubung tetapi tidak berbicara / sedang tidak terhubung |
 | Retensi | Lama data disimpan sebelum kedaluwarsa |

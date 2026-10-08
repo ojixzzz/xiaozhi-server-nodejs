@@ -39,3 +39,8 @@ memory/
 !.env.mqtt.example
 certs/*
 !certs/README.md
+
+# Local Python MCP example environments
+.venv/
+__pycache__/
+*.pyc

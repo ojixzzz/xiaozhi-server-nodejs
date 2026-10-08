@@ -39,6 +39,7 @@ const { createInboxAnnouncement } = require('./lib/inbox-announcement');
 const { createNotificationReminders } = require('./lib/notification-reminders');
 const { RemoteMcpServers, REMOTE_MCP_INSTRUCTION } = require('./lib/remote-mcp');
 const { AgentConnections } = require('./lib/agent-connections');
+const { McpEndpoint, MAX_PAYLOAD: MCP_ENDPOINT_MAX_PAYLOAD } = require('./lib/mcp-endpoint');
 
 // Configuration
 const GEMINI_API_KEY = process.env.GEMINI_API_KEY;
@@ -173,9 +174,12 @@ try {
 } catch { logger.error('Remote MCP configuration unavailable; existing voice and notifications remain available.'); }
 
 let agentConnections = null;
+let endpointMcp = null;
 try {
   agentConnections = new AgentConnections({
     filename: path.join(DATA_DIR, 'agent-connections.json'), remoteMcp,
+    endpointStatus: id => endpointMcp?.status(id),
+    onRevoked: id => endpointMcp?.revoke(id),
     resolveDevice: id => Object.hasOwn(devices, id) && hasDedicatedDeviceToken(id) &&
       (devices[id].llm_backend || LLM_BACKEND) === 'gemini' ? devices[id] : null,
     toolsEnabled: (id, serverId) => devices[id]?.status === 'approved' && hasDedicatedDeviceToken(id) &&
@@ -397,6 +401,15 @@ const notificationIngress = createNotificationIngress({
   additionalSenders: () => agentConnections?.senders() || [],
   additionalTools: sender => agentConnections?.tools(sender) || [],
   callAdditionalTool: (sender, name, args) => agentConnections.register(sender, args)
+});
+if (agentConnections) endpointMcp = new McpEndpoint({
+  connections: agentConnections,
+  isDeviceAllowed: id => Object.hasOwn(devices, id) && devices[id].status === 'approved' &&
+    hasDedicatedDeviceToken(id) && (devices[id].llm_backend || LLM_BACKEND) === 'gemini',
+  onReady: (deviceId, connectionId) => agentConnections.onRegistered(deviceId, connectionId),
+  onChanged: (deviceId, connectionId) => closeRemoteMcpSessions(connectionId),
+  publish: (sender, args) => notificationIngress.publishSender(sender, args),
+  publicError: notificationPublicError
 });
 const notificationReminders = createNotificationReminders({
   inbox:notificationInbox,
@@ -698,7 +711,7 @@ function closeRemoteMcpSessions(id) {
 }
 function agentAdmin(req, res, next) {
   audioAdmin(req, res, () => {
-    if (!agentConnections || !remoteMcp) return res.status(503).json({ error: 'Agent configuration unavailable; check the saved configuration files' });
+    if (!agentConnections || !endpointMcp) return res.status(503).json({ error: 'Agent configuration unavailable; check the saved configuration files' });
     next();
   });
 }
@@ -720,11 +733,10 @@ app.post('/api/agent_connections/:id/export', requireAuth, agentAdmin, (req, res
 app.delete('/api/agent_connections/:id', requireAuth, agentAdmin, async (req, res) => {
   try {
     const serverId = await agentConnections.remove(req.params.id);
-    if (serverId) {
-      closeRemoteMcpSessions(serverId);
-      for (const device of Object.values(devices)) device.enabled_mcp_devices = device.enabled_mcp_devices?.filter(id => id !== serverId) || [];
-      saveDevices();
-    }
+    closeRemoteMcpSessions(req.params.id);
+    if (serverId) closeRemoteMcpSessions(serverId);
+    for (const device of Object.values(devices)) device.enabled_mcp_devices = device.enabled_mcp_devices?.filter(id => id !== serverId && id !== req.params.id) || [];
+    saveDevices();
     res.json({ success: true });
   } catch (error) { res.status(error.status || 503).json({ error: error.status ? error.message : 'Could not remove agent connection; check status before retrying' }); }
 });
@@ -779,6 +791,9 @@ app.get('/api/mcp_devices', requireAuth, (req, res) => {
     response[info.id].tools = info.tools;
   }
   for (const server of remoteMcp?.list() || []) response[server.id]=server;
+  for (const connection of agentConnections?.list() || []) {
+    response[connection.id] = { ...connection, endpoint: true, status: 'approved', tools: endpointMcp?.tools(connection.id) || [] };
+  }
   res.json(response);
 });
 
@@ -922,10 +937,13 @@ const server = http.createServer(app);
 // WebSockets
 const wssXiaozhi = new WebSocket.Server({ noServer: true });
 const wssMcp = new WebSocket.Server({ noServer: true });
+const wssMcpEndpoint = new WebSocket.Server({ noServer: true, maxPayload: MCP_ENDPOINT_MAX_PAYLOAD, perMessageDeflate: false });
 
 // Handle Upgrades
 server.on('upgrade', (request, socket, head) => {
-  const pathname = new URL(request.url, `http://${request.headers.host}`).pathname;
+  let pathname;
+  try { pathname = new URL(request.url, 'http://localhost').pathname; }
+  catch { socket.destroy(); return; }
   if (pathname === '/xiaozhi/v1' || pathname === '/xiaozhi/v1/') {
     wssXiaozhi.handleUpgrade(request, socket, head, (ws) => {
       wssXiaozhi.emit('connection', ws, request);
@@ -933,6 +951,16 @@ server.on('upgrade', (request, socket, head) => {
   } else if (pathname === '/mcp' || pathname === '/mcp/') {
     wssMcp.handleUpgrade(request, socket, head, (ws) => {
       wssMcp.emit('connection', ws, request);
+    });
+  } else if (pathname === '/mcp_endpoint/mcp' || pathname === '/mcp_endpoint/mcp/') {
+    const sender = ADMIN_PASSWORD_READY && endpointMcp?.authenticate(request);
+    if (!sender) {
+      socket.write('HTTP/1.1 401 Unauthorized\r\nConnection: close\r\n\r\n');
+      socket.destroy();
+      return;
+    }
+    wssMcpEndpoint.handleUpgrade(request, socket, head, ws => {
+      void endpointMcp.accept(ws, sender).catch(() => ws.close(1011, 'MCP endpoint unavailable'));
     });
   } else {
     socket.destroy();
@@ -943,7 +971,7 @@ server.on('upgrade', (request, socket, head) => {
 wssMcp.on('connection', (ws, req) => {
   const mcpUrl = new URL(req.url, `http://${req.headers.host}`);
   const clientId = mcpUrl.searchParams.get('device_id') || crypto.randomUUID();
-  if (clientId === BUILTIN_MCP_ID || /^remote-[0-9a-f-]{36}$/.test(clientId)) {
+  if (clientId === BUILTIN_MCP_ID || /^(remote|agent)-[0-9a-f-]{36}$/.test(clientId)) {
     ws.close(1008,'Reserved MCP connection ID');
     return;
   }
@@ -1068,6 +1096,7 @@ wssXiaozhi.on('connection', (ws, req) => {
   let sessionClosed = false;
   let inboxAnnouncement = null;
   const remoteToolRoutes = new Map();
+  const endpointToolRoutes = new Map();
   const remoteToolAbort = new AbortController();
   let memoryTurns = null;
   let isSpeaking = false;
@@ -1201,6 +1230,13 @@ wssXiaozhi.on('connection', (ws, req) => {
       }
 
       const sessionBackend=deviceConfig.llm_backend || LLM_BACKEND;
+      if (sessionBackend === 'gemini' && hasDedicatedDeviceToken(macAddress) && endpointMcp) {
+        for (const [name, route] of endpointMcp.routes(enabledMcpSet, macAddress)) {
+          if (toolsMap.has(name)) continue;
+          toolsMap.set(name, route.definition);
+          endpointToolRoutes.set(name, route);
+        }
+      }
       if (sessionBackend === 'gemini' && hasDedicatedDeviceToken(macAddress) && remoteMcp) {
         await remoteMcp.ensure(enabledMcpSet);
         if (sessionClosed) return;
@@ -1218,7 +1254,7 @@ wssXiaozhi.on('connection', (ws, req) => {
       
       let config = { ...deviceConfig };
       config.prompt = deviceConfig.prompt;
-      if (remoteToolRoutes.size) config.prompt=(config.prompt || 'You are a helpful assistant. Keep responses short.')+'\n'+REMOTE_MCP_INSTRUCTION;
+      if (remoteToolRoutes.size || endpointToolRoutes.size) config.prompt=(config.prompt || 'You are a helpful assistant. Keep responses short.')+'\n'+REMOTE_MCP_INSTRUCTION;
       if(canUseInboxTools(activeBackend,hasDedicatedDeviceToken(macAddress))) config.prompt=(config.prompt || 'You are a helpful assistant. Keep responses short.')+'\n'+INBOX_INSTRUCTION;
       config.input_transcription = deviceConfig.input_transcription;
       config.output_transcription = deviceConfig.output_transcription;
@@ -1388,6 +1424,19 @@ wssXiaozhi.on('connection', (ws, req) => {
 
       newProvider.on('tool_call', (callId, name, args) => {
           if (sessionClosed) return;
+          const endpointRoute = endpointToolRoutes.get(name);
+          if (endpointRoute) {
+            if (!devices[macAddress]?.enabled_mcp_devices?.includes(endpointRoute.connectionId)) {
+              newProvider.sendToolResponse(callId, name, JSON.stringify({ error: 'MCP endpoint is no longer selected for this device' }));
+              return;
+            }
+            endpointMcp.call(endpointRoute, args, { deviceId: macAddress, sessionId, signal: remoteToolAbort.signal }).then(result => {
+              if (!sessionClosed) newProvider.sendToolResponse(callId, name, JSON.stringify(result));
+            }).catch(error => {
+              if (!sessionClosed) newProvider.sendToolResponse(callId, name, JSON.stringify({ error: error.message }));
+            });
+            return;
+          }
           const remoteRoute=remoteToolRoutes.get(name);
           if (remoteRoute) {
             if (!hasDedicatedDeviceToken(macAddress) || devices[macAddress]?.status !== 'approved' ||
@@ -1702,8 +1751,10 @@ async function shutdown() {
   server.close();
   for (const ws of wssXiaozhi.clients) { voiceTeardowns.get(ws)?.(); ws.terminate(); }
   for (const ws of wssMcp.clients) ws.terminate();
+  for (const ws of wssMcpEndpoint.clients) ws.terminate();
   await watcher.close();
   await notificationReminders.close();
+  await endpointMcp?.close();
   await remoteMcp?.close();
   try { await Promise.all([memoryStore.close(),notificationInbox.close()]); }
   catch { logger.error('Failed to flush memory during shutdown.'); process.exitCode = 1; }

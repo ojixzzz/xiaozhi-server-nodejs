@@ -56,6 +56,7 @@ test('HTTP auth, device ownership, memory persistence and graceful shutdown (no 
   assert.equal(pairedResponse.status, 201);
   const pairing = await pairedResponse.json();
   const bearer = pairing.mcp_config.mcpServers.xiaozhi.headers.Authorization;
+  assert.equal(pairing.mcp_endpoint, `ws://127.0.0.1:${port}/mcp_endpoint/mcp/?token=${bearer.slice(7)}`);
   const senderHeaders = { Authorization:bearer,'Content-Type':'application/json' };
   assert.equal(JSON.stringify(await (await fetch(agentUrl,{headers})).json()).includes(bearer.slice(7)), false);
   assert.equal((await fetch(`${agentUrl}/${pairing.connection.id}/export`, { method:'POST',headers:{Cookie:cookie,'Content-Type':'application/json'},body:'{}' })).status, 403);
@@ -76,6 +77,8 @@ test('HTTP auth, device ownership, memory persistence and graceful shutdown (no 
   const mcpConnections=await (await fetch(base+'/api/mcp_devices',{headers})).json();
   assert.equal(mcpConnections[remote.id].remote,true);
   assert.equal(mcpConnections[remote.id].name,'Custom agent');
+  assert.equal(mcpConnections[pairing.connection.id].endpoint, true);
+  assert.equal(JSON.stringify(mcpConnections).includes(bearer.slice(7)), false);
   assert.equal(JSON.stringify(mcpConnections).includes(remoteSettings.token),false);
   const url=base+'/api/devices/alpha/memory';
   assert.equal((await fetch(url)).status,401);

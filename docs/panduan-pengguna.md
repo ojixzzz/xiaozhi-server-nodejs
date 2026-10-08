@@ -95,13 +95,14 @@ berbeda dari **Save message & beep** dan tidak membuat pesan teks di inbox.
 
 1. Buka **MCP Devices → Hubungkan agent · MCP dua arah**.
 2. Pilih perangkat Gemini. Nama agent sudah terisi; ubah jika diinginkan.
-3. Klik **Buat konfigurasi**, lalu **Salin untuk agent**.
+3. Klik **Buat endpoint**, lalu **Salin untuk agent**.
 4. Tempel teks tersebut ke agent eksternal yang Anda percaya.
 5. Tunggu status **Terhubung dua arah**, lalu buka ulang percakapan perangkat.
 
 Konfigurasi berisi token inbox khusus perangkat. Agent dapat mengirim pesan
 melalui koneksi tersebut. Untuk arah sebaliknya, agent perlu menyediakan server
-MCP dan mendaftarkannya sesuai instruksi yang disalin. Jika aplikasi hanya punya
+MCP lokal stdio dan menjalankannya lewat `mcp_pipe.py` dengan `MCP_ENDPOINT` yang
+disalin. Agent tidak perlu membuka server HTTP publik. Jika aplikasi hanya punya
 MCP client, koneksi balik belum tersedia sampai ada server/adaptor.
 
 Alamat dashboard otomatis dipakai dalam konfigurasi. Jika alamatnya `localhost`
@@ -112,7 +113,7 @@ konfigurasi. `localhost` pada agent menunjuk mesin agent sendiri.
 Ada dua pilihan salin:
 
 - **Salin untuk agent:** teks petunjuk lengkap, termasuk konfigurasi dan cara koneksi balik.
-- **Salin JSON MCP saja:** konfigurasi untuk ditempel ke editor MCP aplikasi yang mendukung formatnya.
+- **Salin MCP_ENDPOINT:** URL WebSocket untuk environment pada mesin agent.
 
 Jika clipboard tidak tersedia, dashboard memilih teks untuk Anda. Tekan **Ctrl+C**
 atau **Cmd+C**, lalu tempel ke agent. Detail dan arti status ada di
@@ -163,8 +164,8 @@ pribadi, terutama pada perangkat yang dipakai bersama.
 | `unknown` | Hasil pengiriman tidak dapat dipastikan; lihat inbox sebelum membuat pesan baru |
 | Beep terus berulang | Masih ada unread. Dengarkan respons judul sampai selesai atau gunakan **Mark read** |
 | Pesan hilang dari filter unread | Ganti ke **All messages**; pesan mungkin sudah read |
-| “Inbox siap · menunggu agent…” | Agent belum mendaftarkan server MCP untuk koneksi balik |
-| Server agent offline | Periksa URL dan token server agent; lihat [panduan agent](remote-mcp.md) |
+| “Inbox siap · menunggu koneksi MCP pipe” | Isi MCP_ENDPOINT lalu jalankan pipe pada mesin agent |
+| Server agent offline | Periksa MCP_ENDPOINT, proses pipe dan jaringan; lihat [panduan agent](remote-mcp.md) |
 | Tools tersedia, tetapi belum digunakan | Pastikan tools dipilih untuk perangkat dan buka ulang percakapan Gemini |
 | Perangkat tidur/mati | Aktifkan kembali perangkat; MQTT tidak membangunkan perangkat yang mati/deep sleep |
 | Inbox penuh | Read tidak menghapus pesan. Tunggu retensi atau minta administrator meninjau kapasitas |

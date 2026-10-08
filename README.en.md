@@ -43,18 +43,24 @@ not require Redis or a separate MQTT broker.
 Start with an approved device and a working Gemini conversation.
 
 1. Open **MCP Devices → Hubungkan agent · MCP dua arah**.
-2. Select a device and click **Buat konfigurasi** (Create configuration).
+2. Select a device and click **Buat endpoint** (Create endpoint).
 3. Click **Salin untuk agent** (Copy for agent) and paste the text into your agent.
 4. Once **Terhubung dua arah** (Connected both ways) appears, reopen the voice conversation.
 
 The dashboard generates a device-scoped inbox token without editing `.env`.
 Give this private configuration only to the agent you intend to connect.
-The setup text tells the agent to register its return endpoint using `agent_register`;
-the relay then automatically selects its tools for the paired device.
+The agent exposes a **local stdio MCP server** through a WebSocket pipe, following
+the `mcp-calculator` example:
 
-The external agent must provide an **MCP server** to receive tool calls. An
-MCP-client-only application can send notifications but needs a server/adapter for
-the return direction. [The agent guide](docs/remote-mcp.md) explains this distinction.
+```sh
+export MCP_ENDPOINT='FULL_PRIVATE_URL_FROM_DASHBOARD'
+python mcp_pipe.py agent.py
+```
+
+No public agent HTTP server is required. `xiaozhi_notify.py` sends inbox messages
+using that same endpoint, with no extra device/credential configuration.
+[Bundled examples](examples/mcp-endpoint/README.en.md) and
+[the agent guide](docs/remote-mcp.en.md) explain both directions.
 
 ## Notification behavior
 
@@ -107,8 +113,8 @@ Preserve the existing Compose project name and volume when updating.
 ## Troubleshooting and development
 
 If text is saved but no chime plays, check device connectivity, MQTT selection,
-and the reachable audio URL. If the dashboard says it is waiting for agent
-registration, the return MCP server is not registered yet. Reopen the conversation
+and the reachable audio URL. If the dashboard is waiting for a pipe connection,
+set MCP_ENDPOINT and start the local pipe. Reopen the conversation
 after tools are connected. More help: [user guide](docs/panduan-pengguna.md#jika-ada-masalah).
 
 Run `npm run check` and `npm test` for source verification when appropriate.

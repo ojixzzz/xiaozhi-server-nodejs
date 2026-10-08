@@ -38,6 +38,9 @@ test('setup exports a scoped token, lists no secrets and survives restart', asyn
   assert.equal(sender.devices.has('alpha'), true);
   assert.equal(created.mcp_config.mcpServers.xiaozhi.url, 'https://relay.example.com/mcp/notifications');
   assert.equal(created.mcp_config.mcpServers.xiaozhi.headers.Authorization, `Bearer ${sender.token}`);
+  assert.equal(created.mcp_endpoint, `wss://relay.example.com/mcp_endpoint/mcp/?token=${sender.token}`);
+  assert.deepEqual(created.environment, { MCP_ENDPOINT: created.mcp_endpoint });
+  assert.equal(sender.defaultDeviceId, 'alpha');
   assert.equal(JSON.stringify(f.manager.list()).includes(sender.token), false);
   assert.equal(fs.statSync(f.options.filename).mode & 0o777, 0o600);
   const restarted = new AgentConnections(f.options);
@@ -65,10 +68,13 @@ test('registration selects only the paired device and updates only its own serve
 
 test('removing a pairing revokes the sender and its remote tools', async t => {
   const f = fixture(t);
+  const revoked = [];
+  f.manager.onRevoked = id => revoked.push(id);
   const created = await f.manager.create(setup('alpha'));
   const sender = f.manager.senders()[0];
   await f.manager.register(sender, { url: 'https://agent.example.com/mcp' });
   await f.manager.remove(created.connection.id);
+  assert.deepEqual(revoked, [created.connection.id]);
   assert.equal(f.servers.size, 0);
   assert.equal(f.manager.active(sender), false);
   assert.deepEqual(f.manager.senders(), []);

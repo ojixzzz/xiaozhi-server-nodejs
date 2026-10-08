@@ -1,217 +1,237 @@
-# Two-way external agent integration
+# Two-way MCP agents
 
-[Bahasa Indonesia](remote-mcp.md) · **English** · [Documentation index](README.md)
+[Indonesian](remote-mcp.md) · **English** · [Documentation index](README.md)
 
-Use this guide after your relay and Gemini voice conversation work. For the
-short dashboard flow, follow the first setup section; protocol/API details are
-for developers. New MCP dashboard changes have not been locally tested in this
-iteration; a connected status is not verification of the agent’s task logic.
+Copy **MCP_ENDPOINT** from the dashboard and run a local stdio MCP server through
+`mcp_pipe.py`. This follows the `xiaozhi-esp32-server` / `mcp-calculator` pattern:
+the agent connects outward to the relay over WebSocket. No public agent HTTP
+server or `agent_register` call is required for this flow.
 
-The relay supports two independent MCP connections:
+| Direction | Behavior |
+| --- | --- |
+| XiaoZhi → agent | Gemini calls the agent's local tools for tasks or replies |
+| Agent → XiaoZhi | The agent sends titles and bodies to the persistent inbox, including delayed job results |
 
-| Direction | MCP client | MCP server | Purpose |
-| --- | --- | --- | --- |
-| Agent → XiaoZhi | Hermes/custom agent | Relay `/mcp/notifications` | Call `notify_send` to store text and request a chime |
-| XiaoZhi → agent | Relay, acting for the device's Gemini session | Your agent's remote MCP endpoint | Discover and call the agent's tools |
+## Dashboard setup
 
-These use separate credentials. The external agent must provide a real MCP
-server for its tools; being able to call other MCP servers does not automatically
-make an agent an MCP server. Incoming notifications do not require an active
-voice session. Outgoing tool calls happen during an authenticated Gemini session.
+Start with an approved device, its own token, and a working Gemini conversation.
 
-## Simple dashboard setup: copy to your agent
+1. Open **MCP Devices → Hubungkan agent · MCP dua arah**.
+2. Select the device; optionally rename the agent.
+3. Check **Alamat dashboard yang bisa diakses agent**: use a relay address reachable
+   from the agent. Another computer's `localhost` is not the relay.
+4. Click **Buat endpoint**, then **Salin MCP_ENDPOINT**. **Salin untuk agent** copies
+   complete setup instructions instead.
+5. Set the copied environment variable on the agent machine:
 
-1. Deploy the new relay image and open **MCP Devices → Hubungkan agent · MCP dua arah**.
-2. Choose an approved Gemini device with its own device token. The agent name is
-   prefilled; change it if desired. The public relay URL is filled from the
-   dashboard address. Under **Alamat dashboard yang bisa diakses agent**, change
-   it only if your agent needs a different reachable domain/IP.
-3. Click **Buat konfigurasi**, then **Salin untuk agent**. Paste the complete text
-   into Hermes/custom agent. **Salin JSON MCP saja** is available for an MCP
-   configuration editor; it contains a standard `mcpServers` entry with URL and
-   Authorization header. Some clients require their own configuration format.
-4. The agent can immediately call `notify_send` to store an inbox message for the
-   selected device. No `.env` changes or restart are needed for this sender.
-5. For the return direction, the setup text tells the agent to provide its own
-   reachable MCP server, then call `agent_register` with its URL, transport and
-   optional separate Bearer token. The relay discovers its tools and automatically
-   selects this connection for the paired device. Reopen the voice conversation.
-   The dashboard shows **Terhubung dua arah** once the server is connected and
-   tools are enabled for the device.
-
-An agent that only supports MCP clients still needs an MCP server/adapter for
-the return direction. Pasting instructions cannot create an endpoint in an
-application that lacks that capability. The dashboard keeps this state visible
-as **Inbox siap · menunggu agent mendaftarkan server MCP**.
-
-`agent_register` is exposed only to dashboard-created credentials. Existing
-environment-configured notification senders retain only `notify_send`. The tool
-accepts `{url, transport?, token?}`, never a device ID or a connection ID; the
-relay obtains both from the saved pairing. Its endpoint URL follows the same
-HTTPS/loopback and `MCP_ALLOW_HTTP` rules as manual configuration. It can update
-only its own outgoing connection. Do not reuse the relay notification token as
-the agent-server token. An offline registration returns `registered:true` with
-`connected:false`; discovery retries every 30 seconds. It does not prove the
-agent's business logic works and does not send a test notification.
-
-Pairings and their randomly generated per-device sender tokens persist in
-`DATA_DIR/agent-connections.json` with mode `0600`, inside the existing data
-volume. The normal list/poll API never returns tokens. Explicit authenticated
-creation/export operations provide them for copying; the dashboard clears the
-visible export on close/logout. **Hapus koneksi** revokes that token, removes the
-outgoing server and deselects its tools. Existing stored inbox messages remain.
-Deleting only the outgoing server in the advanced section leaves the inbox
-token active so the agent can register a replacement endpoint later.
-
-`NOTIFY_SENDERS_JSON=[]` disables environment-defined senders only. To revoke
-dashboard-created credentials, delete their connections in the dashboard.
-Existing malformed ingress environment settings still fail closed; correct
-those settings before using a pairing.
-
-## Manual outgoing connection (advanced)
-
-1. Open **MCP Devices → Konfigurasi MCP manual / lanjutan → Add external MCP**.
-2. Enter a name, your agent's server URL, transport and optional Bearer token.
-   Streamable HTTP is the default; select SSE for an older HTTP+SSE server.
-3. Click **Save & connect**. Inspect connection status and **View Tools**.
-   Saving retains the configuration even if the agent is unavailable; the relay
-   checks disconnected enabled servers again every 30 seconds. **Reconnect** or
-   **Refresh tools** triggers discovery explicitly.
-4. Open **Configure Xiaozhi Device → Expose Tools from MCP Devices**, select the
-   new connection and save. Reopen the voice conversation to load its tools.
-
-Tools are available only to approved devices with a dedicated device token using
-Gemini, and only for connections enabled in that device's configuration. Saving,
-refreshing or deleting an outgoing connection closes affected voice sessions so
-their tool definitions can be reloaded. Disabling/deleting a connection also
-prevents subsequent calls from old sessions.
-
-HTTPS and loopback HTTP are accepted by default. To use an agent on a trusted
-LAN/container network, explicitly set `MCP_ALLOW_HTTP=true` and recreate the relay
-before entering its HTTP URL. With Docker, `localhost` means the relay container
-unless using host networking; use a reachable service name/address for a separate
-agent container. URLs must not contain query parameters, credentials or fragments.
-Provide authentication through the dedicated Bearer token field.
-
-Credentials are stored in `DATA_DIR/remote-mcp-servers.json`, with mode `0600`,
-inside the existing data volume. The file is excluded from Git and Docker build
-contexts. Dashboard APIs return only `tokenConfigured`, never the saved token.
-Leaving the token blank on edit preserves it; **Remove saved token** clears it.
-Backups of the data volume include these credentials. This file is private, not
-encrypted. A malformed saved configuration disables this optional integration
-without replacing the file or interrupting voice/notification services.
-
-This connection supports remote tool calls; it does not spawn local `stdio`
-commands or implement an OAuth login, sampling, resource browsing or elicitation.
-
-## Configure notifications back from the agent
-
-This environment-based setup is needed only for the manual connection flow.
-The simple dashboard setup above creates and saves its sender automatically.
-
-Follow [notification sender setup](hermes-mcp.md). In the relay environment, use
-the exact approved device IDs and a separate sender credential:
-
-```dotenv
-NOTIFY_SENDERS_JSON=[{"name":"my-agent","token_env":"AGENT_NOTIFY_TOKEN","device_ids":["aa:bb:cc:dd:ee:ff"]}]
-# Supply a real unique token, at least 32 characters, through the protected env.
-# AGENT_NOTIFY_TOKEN=<agent-to-relay credential>
+```sh
+export MCP_ENDPOINT='wss://relay.example.com/mcp_endpoint/mcp/?token=TOKEN_FROM_DASHBOARD'
+python mcp_pipe.py calculator.py
 ```
 
-Configure your external agent as an MCP client of
-`https://relay.example.com/mcp/notifications` with
-`Authorization: Bearer <agent-to-relay credential>`. It initializes MCP and calls
-`notify_send` with `device_id`, optional `title`, `text` and `idempotency_key`.
-The existing direct HTTP fallback is `POST /api/notifications` with the same
-credential and message fields.
+The URL above is a placeholder. Use the complete private URL from the dashboard.
+The original calculator pipe can connect without changing its JSON-RPC framing.
+Dashboard HTTPS produces WSS, while HTTP produces WS; use TLS over the internet.
+The URL contains a secret scoped to one device. Keep it out of repositories,
+public screenshots, and logs. Creating a pairing needs no relay restart or env edit.
 
-## Contract for a custom agent MCP server
+## Bundled examples
 
-Use the official MCP SDK to expose standard `initialize`, `tools/list` and
-`tools/call` operations over Streamable HTTP. The relay uses
-`@modelcontextprotocol/sdk`, negotiates the protocol version, and supports JSON
-responses, SSE responses and session IDs through that SDK. See the
-[official client documentation](https://github.com/modelcontextprotocol/typescript-sdk/blob/v1.x/docs/client.md)
-and [server documentation](https://github.com/modelcontextprotocol/typescript-sdk/blob/v1.x/docs/server.md).
+See [examples/mcp-endpoint](../examples/mcp-endpoint/README.en.md) for a Python 3.11+
+pipe, calculator and two-way example agent:
 
-Useful application tools include:
+```sh
+cd examples/mcp-endpoint
+python -m venv .venv
+source .venv/bin/activate
+python -m pip install -r requirements.txt
+export MCP_ENDPOINT='FULL_URL_FROM_DASHBOARD'
+python mcp_pipe.py agent.py
+```
 
-| Example tool | Arguments | Suggested result |
-| --- | --- | --- |
-| `agent_submit_task` | `instruction` | `{ "accepted": true, "job_id": "job-123" }` |
-| `agent_task_status` | `job_id` | Task state and bounded human-readable progress |
-| `agent_reply` | `notification_id`, `message` | Acceptance of the user's response |
+`agent.py` exposes `agent_echo` and `agent_notify`. Replace the demonstration tools
+with your real Hermes/agent integration. No live Hermes service or job queue is
+configured by this repository.
 
-These are example business tools for your agent to implement; the relay does
-not fabricate them or execute work on its own. Each tool must supply an object
-`inputSchema`. A connection accepts up to 64 unique tools, each with an input
-schema of at most 8,000 serialized characters. Use Gemini-compatible JSON schemas.
+A local MCP server provides line-delimited JSON-RPC over stdio. To launch another
+runtime, use `python mcp_pipe.py -- node /path/to/server.js`. With no arguments,
+the bundled pipe reads `mcp_config.json` or the file at `MCP_CONFIG`; every enabled
+stdio server receives its own WebSocket connection to the same endpoint. Identical
+tool names are isolated. HTTP/SSE requires an adapter or the advanced flow below.
 
-The relay adds server-controlled caller context to every outgoing `tools/call`:
+Once discovery finishes, tools are automatically selected for the paired device.
+Wait for **Terhubung dua arah · … tools** and reopen the voice conversation.
+Connection changes close affected conversations to discard stale definitions.
+Restart the pipe after changing tools to rediscover them.
+
+## Send inbox messages with the same endpoint
+
+The original calculator only calculates; starting it does not send notifications.
+For agent-initiated messages, use the bundled helper:
+
+```python
+from xiaozhi_notify import notify_send
+
+receipt = notify_send(
+    title="Report ready",
+    text="Your report summary is available.",
+    idempotency_key="job-123-complete",
+)
+```
+
+The helper reads the same **MCP_ENDPOINT**, extracts its token, and posts to
+HTTP(S) `/api/notifications` on that relay. The device comes from the pairing:
+no second URL, credential or device setting is needed. It can deliver a delayed
+result after a conversation ends and while the tools WebSocket is disconnected.
+In async tools, run the synchronous helper through `asyncio.to_thread`.
+
+For one explicitly requested terminal message:
+
+```sh
+python xiaozhi_notify.py --title 'Report ready' --text 'Your result is available.' --idempotency-key 'job-123-complete'
+```
+
+`stored: true` confirms persistence, not audible playback. Keep `notification_id`
+for replies. Use a stable unique key per message; if delivery is uncertain, check
+the inbox before retrying with the **same key and content**. No automatic send
+retry occurs. The inbox retains its reminder/read behavior: one-minute reminder
+attempts, paused during conversations, and titles spoken first on “halo”, “apa”,
+or “ada apa”. See [notification behavior](../README.en.md#notification-behavior).
+
+## Status and troubleshooting
+
+| Dashboard status / symptom | Next step |
+| --- | --- |
+| **Inbox siap · menunggu koneksi MCP pipe** | Set MCP_ENDPOINT and start the pipe |
+| **Menghubungkan MCP · membaca daftar tools…** | Wait for handshake; check MCP server stderr |
+| **MCP terhubung · belum menyediakan tools** | Add tools and restart the pipe |
+| **MCP terhubung · aktifkan tools di konfigurasi perangkat** | Check Gemini, dedicated token and Config selection |
+| **Terhubung dua arah · … tools** | Reopen the conversation and use a provided tool |
+| **Inbox siap · MCP belum terhubung** | Check endpoint, agent process, network and status error |
+| Unauthorized connection | Check approval, dedicated token, Gemini and whether pairing was revoked |
+| Domain WebSocket fails | Forward WebSocket Upgrade through the reverse proxy |
+
+The bundled pipe reconnects with a 1–60 second backoff. It never replays pending
+calls; the agent might have executed them already. Agent and device can be on
+different networks as long as the agent can reach the relay. Container localhost
+points to that container, not another machine.
+
+**Hapus koneksi** revokes both endpoint and inbox access, closes every paired
+pipe, and removes tools. Existing inbox messages remain until retention expires.
+**Tutup** only hides credentials; **Konfigurasi untuk agent** reexports the same
+URL/token. Connected status proves discovery, not success of every business task.
+
+## WebSocket developer contract
+
+Endpoint: `/mcp_endpoint/mcp/?token=PAIRING_TOKEN`. A Bearer header is also accepted
+by custom bridges; if both are supplied they must agree. This is a custom
+WebSocket transport compatible with the calculator pipe, separate from MCP
+Streamable HTTP.
+
+The relay uses the MCP SDK client for `initialize`, `notifications/initialized`,
+paginated `tools/list`, and `tools/call`. Each text frame carries one JSON-RPC
+object. Limits: 256 KiB/frame, 10-second initialization, 16 providers and 64 tools
+per pairing, 64 providers globally, 8,000 JSON characters per tool input schema.
+
+Tool aliases avoid collisions; original names are dispatched to the agent.
+Authenticated caller context accompanies calls:
 
 ```json
 {
-  "name": "agent_submit_task",
-  "arguments": { "instruction": "Siapkan ringkasan laporan" },
-  "_meta": {
-    "xiaozhi/device_id": "aa:bb:cc:dd:ee:ff",
-    "xiaozhi/session_id": "the-current-voice-session-uuid"
+  "jsonrpc": "2.0",
+  "id": 123,
+  "method": "tools/call",
+  "params": {
+    "name": "agent_submit_task",
+    "arguments": { "instruction": "Prepare a report" },
+    "_meta": {
+      "xiaozhi/device_id": "aa:bb:cc:dd:ee:ff",
+      "xiaozhi/session_id": "VOICE_SESSION_ID"
+    }
   }
 }
 ```
 
-The agent should use `_meta["xiaozhi/device_id"]` as the originating device,
-checking it against its own authorization scope. The model does not set this
-metadata. For a reply, save the notification UUID from `notify_send`'s receipt
-so `agent_reply` can correlate the user's response with your original event.
+`agent_submit_task`, `agent_task_status` and `agent_reply` are suggested business
+tools the agent must implement. Check caller scope on the agent. For long jobs,
+return an accepted status and job ID within 30 seconds, continue in the agent's
+queue, and later send an inbox receipt. Four calls per provider may be in flight;
+results are bounded to 6,000 JSON characters and treated as untrusted data. Timeout
+or disconnection means execution outcome is unknown; no automatic action retry.
 
-For long-running work, return an accepted job ID within 30 seconds, finish work
-in the agent's own queue, then call the relay's `notify_send`:
+A custom bridge can send a notification on the same WebSocket:
 
 ```json
 {
-  "device_id": "aa:bb:cc:dd:ee:ff",
-  "title": "Ringkasan laporan selesai",
-  "text": "Hasil ringkasan untuk job-123 sudah tersedia.",
-  "idempotency_key": "job-123-complete"
+  "jsonrpc": "2.0",
+  "id": "notify-job-123",
+  "method": "xiaozhi/notify",
+  "params": {
+    "title": "Report ready",
+    "text": "Your result is available.",
+    "idempotency_key": "job-123-complete"
+  }
 }
 ```
 
-Repeated submissions of that event must reuse the same idempotency key and
-identical content. This callback is independent of the original voice session,
-so it works after the user has stopped talking. The ordinary inbox reminder and
-title-first/read behavior apply to the completion notification.
+Alternatively use `tools/call`, `params.name: "notify_send"`, with arguments in
+`params.arguments`. This is a **relay extension for server-to-client delivery**;
+ordinary stdio MCP SDKs do not implement it automatically. Do not write these
+requests into FastMCP stdout without a bridge that can demultiplex replies. For
+ordinary stdio servers, use the HTTP helper instead.
 
-Remote tool names are scoped internally to avoid collisions with other servers
-or built-in tools. The original name is sent to the external agent. Tool results
-are bounded to 6,000 serialized characters and kept as untrusted data. Remote
-`isError`/structured results are preserved; exceptions/timeouts do not become
-success. At most four concurrent tool calls per connection are dispatched.
-Calls are not automatically replayed after an error, timeout or disconnect;
-the external agent may still be running an action whose result was lost.
+The response echoes the ID and includes `result.content`, `structuredContent`
+(the receipt) and `isError`. Inbox requests must have IDs: fire-and-forget requests
+are not stored. The token determines device scope; other device IDs are rejected.
+Revoked tokens cannot submit new messages. Inbox keys handle message duplication.
 
-## Dashboard API
+## Advanced HTTP/SSE and existing integrations
 
-Admin routes require login and a configured strong admin password. Mutations
-require JSON and `X-Requested-With: XiaozhiDashboard`:
+Existing integrations remain available under **MCP Devices → Konfigurasi MCP
+manual / lanjutan → Add external MCP**. Supply a relay-reachable Streamable HTTP
+or SSE agent URL and a separate agent-server token, then select that connection
+in **Xiaozhi Devices → Config → Expose Tools from MCP Devices**. Reopen the voice
+conversation. **Reconnect / Refresh tools** reloads HTTP tools.
 
-- `GET /api/remote_mcp_servers`: sanitized settings, connection state and tools
-- `POST /api/remote_mcp_servers`: `{id?,name,url,transport,token?,enabled?}`;
-  `token:null` clears a saved token, an empty string preserves it on edit
-- `POST /api/remote_mcp_servers/:id/connect`: reconnect and discover tools
-- `DELETE /api/remote_mcp_servers/:id`: remove connection and device selections
+HTTPS and loopback HTTP are accepted; trusted LAN/container HTTP needs
+`MCP_ALLOW_HTTP=true`. HTTP server URLs cannot include credentials, queries or
+fragments. A blank edit token preserves the secret; **Remove saved token** removes
+it. This advanced flow connects outgoing tools only. Inbox uses dashboard pairing
+or [manual sender configuration](hermes-mcp.md).
 
-Simple pairing routes use the same strong admin session, JSON/custom-header
-mutation checks and `Cache-Control: no-store`:
+Admin exports still include the old `mcp_config` targeting `/mcp/notifications`.
+Its paired token retains the `agent_register` tool with `{url,transport?,token?}`
+for automatically selecting an HTTP return server. Agent-server credentials must
+be separate from the pairing token. The pipe flow needs no registration. Removing
+an advanced HTTP server does not revoke the pairing token; delete the pairing to
+revoke all access.
 
-- `GET /api/agent_connections`: settings/status without credentials
-- `POST /api/agent_connections`: `{name,device_id,public_url}`; create a scoped
-  sender and return instructions plus `mcp_config`
-- `POST /api/agent_connections/:id/export`: copy the existing instructions/config
-- `DELETE /api/agent_connections/:id`: revoke sender and remove its outgoing tools
+## Persistence, proxy and admin API
 
-Saved remote servers also appear in `GET /api/mcp_devices` so the existing
-per-device tool selection works for both incoming WebSocket providers and
-outgoing remote servers. No live Hermes/custom-agent endpoint is bundled or
-configured automatically. Added automated coverage is not a verification of an
-actual external agent, Gemini tool selection or physical-device behavior.
+`DATA_DIR/agent-connections.json` stores paired endpoint/inbox credentials;
+`remote-mcp-servers.json` stores advanced HTTP settings. Files are mode `0600` on
+POSIX and private, not encrypted. Backups contain credentials. Existing pairings
+can reexport the new WebSocket URL with their existing token; inbox and volume
+migration is unnecessary. Polling APIs contain no token, and the dashboard clears
+setup text on close/logout.
+
+The endpoint shares the dashboard port; no additional endpoint service is needed.
+Proxy `/mcp_endpoint/mcp/` with WebSocket Upgrade and allow `/api/notifications`
+for the helper. Keep token query strings out of proxy access logs.
+
+| Admin API | Purpose |
+| --- | --- |
+| `GET /api/agent_connections` | Credential-free status and tool/provider counts |
+| `POST /api/agent_connections` | `{name,device_id,public_url}` → pairing, `mcp_endpoint`, `environment`, instructions and legacy HTTP config |
+| `POST /api/agent_connections/:id/export` | Reexport existing credentials |
+| `DELETE /api/agent_connections/:id` | Revoke endpoint/inbox and remove tools |
+| `GET /api/remote_mcp_servers` | Advanced HTTP servers without secrets |
+| `POST /api/remote_mcp_servers` | `{id?,name,url,transport,token?,enabled?}` |
+| `POST /api/remote_mcp_servers/:id/connect` | HTTP reconnect and discovery |
+| `DELETE /api/remote_mcp_servers/:id` | Remove HTTP server and selections |
+
+Admin APIs require a strong-password session; mutations require JSON and
+`X-Requested-With: XiaozhiDashboard`. Admin responses use `Cache-Control: no-store`.
+Resources, OAuth, sampling and elicitation are not supplied. Transport/scope tests
+are included but this change has not been locally tested/built or verified with
+live agents and physical devices.

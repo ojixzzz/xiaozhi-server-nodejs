@@ -15,6 +15,7 @@ const { DatabaseSync } = require('node:sqlite');
 const OpusScript = require('opusscript');
 const { createGateway } = require('../gateway/server');
 const { MqttDevice } = require('./helpers/mqtt-device');
+const { endpointProvider } = require('./helpers/endpoint-provider');
 
 const ROOT = path.join(__dirname, '..');
 const MAC = '02:00:00:00:20:01';
@@ -247,6 +248,68 @@ async function fixture(t) {
     }
   };
 }
+
+test('calculator-style endpoint connects voice tools and delayed durable inbox without a public agent HTTP server', { timeout: 30000 }, async t => {
+  const f = await fixture(t);
+  const setup = await f.request('/api/agent_connections', { method: 'POST', body: JSON.stringify({
+    name: 'Local stdio agent', device_id: MAC, public_url: f.base
+  }) });
+  assert.equal(setup.status, 201);
+  const pairing = setup.body;
+  const tool = { name: 'agent_echo', description: 'Echo a message', inputSchema: {
+    type: 'object', properties: { message: { type: 'string' } }, required: ['message']
+  } };
+  const agent = await endpointProvider(pairing.mcp_endpoint, [tool], params => ({
+    content: [{ type: 'text', text: params.arguments.message }]
+  }));
+  t.after(() => agent.ws.terminate());
+  await until(async () => (await f.request('/api/agent_connections')).body.find(row =>
+    row.id === pairing.connection.id && row.connected && row.tools_enabled), 'endpoint discovery and auto-selection');
+  const listed = (await f.request('/api/mcp_devices')).body[pairing.connection.id];
+  const alias = listed.tools[0].exposedName;
+  assert.equal(listed.endpoint, true);
+  assert.equal(JSON.stringify(listed).includes(new URL(pairing.mcp_endpoint).searchParams.get('token')), false);
+  const config = await f.selectMqtt(MAC, UUID);
+  const device = await f.connect(config);
+  const voice = await f.openScript(device, [{ id: 'agent-echo', name: alias, args: { message: 'From XiaoZhi' } }]);
+  assert.ok(voice.connected.tools.some(item => item.name === alias));
+  assert.equal(voice.responses[0].data.result.content[0].text, 'From XiaoZhi');
+  assert.equal(agent.calls[0].name, 'agent_echo');
+  assert.equal(agent.calls[0]._meta['xiaozhi/device_id'], MAC);
+  assert.ok(agent.calls[0]._meta['xiaozhi/session_id']);
+  await f.closeScript(device, voice.connected.session);
+
+  const input = { title: 'Agent selesai', text: 'Delayed job result', idempotency_key: 'endpoint-job-1' };
+  const receipt = (await agent.request('callback-1', 'xiaozhi/notify', input)).result.structuredContent;
+  assert.equal(receipt.stored, true);
+  assert.equal(receipt.device_id, MAC);
+  assert.equal(f.rows()[0].text, input.text);
+  assert.equal(f.rows()[0].sender, pairing.connection.id);
+  assert.ok(f.beforeForward[0].some(row => row.id === receipt.notification_id), 'SQLite commit precedes beep');
+  await device.waitForMessage(message => message.type === 'notify');
+  const duplicate = (await agent.request('callback-2', 'tools/call', { name: 'notify_send', arguments: input })).result.structuredContent;
+  assert.equal(duplicate.notification_id, receipt.notification_id);
+  assert.equal(duplicate.duplicate, true);
+  assert.equal(f.rows().length, 1);
+  const denied = (await agent.request('other-device', 'xiaozhi/notify', { ...input, device_id: OTHER_MAC })).result;
+  assert.equal(denied.isError, true);
+  assert.equal(denied.structuredContent.stored, false);
+  assert.equal(f.rows().length, 1);
+
+  const otherConfig = await f.selectMqtt(OTHER_MAC, OTHER_UUID);
+  const other = await f.connect(otherConfig);
+  const otherVoice = await f.openScript(other, []);
+  assert.equal(otherVoice.connected.tools.some(item => item.name === alias), false);
+  await f.closeScript(other, otherVoice.connected.session);
+  const closed = new Promise(resolve => agent.ws.once('close', resolve));
+  assert.equal((await f.request(`/api/agent_connections/${pairing.connection.id}`, { method: 'DELETE', body: '{}' })).status, 200);
+  await closed;
+  assert.equal(f.rows().length, 1, 'revocation preserves existing messages');
+  const failed = await fetch(f.base + '/api/notifications', { method: 'POST', headers: {
+    'Content-Type': 'application/json', Authorization: pairing.mcp_config.mcpServers.xiaozhi.headers.Authorization
+  }, body: JSON.stringify(input) });
+  assert.equal(failed.status, 404);
+});
 
 test('dashboard-only durable notification inbox supports compose, inspect, acknowledge and explicit beep retry', { timeout: 90000 }, async t => {
   const f = await fixture(t);
