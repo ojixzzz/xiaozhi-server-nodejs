@@ -14,7 +14,7 @@ later. The persistent inbox is independent of whether that beep plays. See
 ## Images published to GHCR
 
 The [Docker publishing workflow](../.github/workflows/docker-publish.yml) builds
-the existing Dockerfile for `linux/amd64` and `linux/arm64` and pushes to
+the existing Dockerfile for `linux/amd64` and pushes to
 `ghcr.io/ojixzzz/xiaozhi-server-nodejs`. It runs on pushes to `main`, tags matching
 `v*`, and manual runs from the GitHub Actions tab.
 
