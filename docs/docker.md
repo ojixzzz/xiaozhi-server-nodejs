@@ -11,6 +11,22 @@ attempts a short fixed beep, and lets the user ask Gemini for the saved content
 later. The persistent inbox is independent of whether that beep plays. See
 [inbox behavior](inbox.md) and [Hermes/agent sender setup](hermes-mcp.md).
 
+## Images published to GHCR
+
+The [Docker publishing workflow](../.github/workflows/docker-publish.yml) builds
+the existing Dockerfile for `linux/amd64` and `linux/arm64` and pushes to
+`ghcr.io/ojixzzz/xiaozhi-server-nodejs`. It runs on pushes to `main`, tags matching
+`v*`, and manual runs from the GitHub Actions tab.
+
+Builds from `main` publish `latest`; tag builds publish the Git tag (for example,
+`v1.0.0`). Every build also publishes a `sha-<short-commit>` tag. Manual runs
+publish `latest` only when the selected branch is `main`.
+
+Publishing uses the automatic `GITHUB_TOKEN` with `packages: write`; no additional
+registry secret is required. The image name follows the repository owner/name,
+so forks publish to their own GHCR namespace. Private packages require GHCR
+authentication to pull.
+
 ## Default WebSocket deployment
 
 ```sh
