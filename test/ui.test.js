@@ -275,6 +275,10 @@ async function exerciseUi(t, evaluate, waitUntil) {
         assert.equal(await evaluate(`Array.from(document.querySelectorAll('#deviceTableBody button')).filter(b => b.textContent === 'Memory & Notify').length`), 2);
         await evaluate(`openConfigModal('${A}')`);
         assert.equal(await evaluate(`document.getElementById('configMacDisplay').textContent`), A);
+        assert.equal(await evaluate(`document.getElementById('configVoiceIdleSeconds').value`), '');
+        await evaluate(`document.getElementById('configVoiceIdleSeconds').value='1'; saveConfig()`);
+        assert.match(await evaluate(`document.getElementById('configStatus').textContent`), /15–3600/);
+        assert.equal(await evaluate(`document.getElementById('configModal').classList.contains('hidden')`), false);
         await evaluate(`closeConfigModal()`);
         assert.equal(await evaluate(`document.getElementById('configModal').classList.contains('hidden')`), true);
     });
@@ -777,6 +781,13 @@ function createTestDocument(source) {
             return true;
         }
         focus() { document.activeElement = this; }
+        checkValidity() {
+            if (this.type !== 'number' || this.value === '') return true;
+            const number = Number(this.value);
+            return Number.isFinite(number) && (this.attributes.min === undefined || number >= Number(this.attributes.min)) &&
+                (this.attributes.max === undefined || number <= Number(this.attributes.max)) &&
+                (this.attributes.step !== '1' || Number.isInteger(number));
+        }
         matches(selector) {
             if (selector === ':disabled') return this.disabled || Boolean(this.parentElement?.closestDisabledFieldset());
             if (selector[0] === '.') return this.classList.contains(selector.slice(1));

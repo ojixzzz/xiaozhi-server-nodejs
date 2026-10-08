@@ -32,6 +32,31 @@ Menu mengikuti teks dashboard yang tersedia. Mengubah pengaturan tertentu akan
 menutup percakapan aktif agar pengaturan baru dimuat. Buka percakapan lagi
 setelah selesai menyimpan.
 
+## Otomatis kembali standby setelah diam
+
+Setelah pengguna diam, perangkat otomatis meninggalkan sesi **Mendengarkan**
+dan kembali standby. Defaultnya **60 detik**. Server menunggu jawaban AI selesai
+diputar dan tools selesai sebelum memulai hitungan diam lagi. Paket audio yang
+berisi keheningan tidak membuat sesi terus aktif.
+
+1. Buka **Xiaozhi Devices → Config** pada perangkat pilihan.
+2. Isi **Standby otomatis setelah diam (detik)**, misalnya `30`, `60`, atau `120`.
+3. Klik **Save**. Perubahan waktu menutup sesi lama; bangunkan perangkat untuk
+   memulai percakapan baru.
+
+Kosong mengikuti standar server. Nilai `0` mematikan timeout ini; nilai lain
+harus 15–3600 detik. Ini mengakhiri **sesi suara**, bukan mematikan perangkat.
+Pada MQTT, koneksi tetap online sehingga beep notifikasi dapat diterima setelah
+sesi suara berakhir. Pada WebSocket langsung, sesi ditutup dan perangkat dapat
+membuka percakapan baru melalui mekanisme firmware-nya.
+
+Deteksi suara memakai level audio sederhana. Suara orang lain, TV, atau kebisingan
+terus-menerus dapat memperpanjang sesi. Jika terlalu sensitif atau tidak mendengar
+suara pelan, administrator dapat menyesuaikan `VOICE_ACTIVITY_THRESHOLD`.
+Jika AI/tools berhenti mengirim aktivitas tanpa menyelesaikan respons, jeda
+pelindung berakhir setelah dua menit, lalu hitungan diam dimulai kembali. Batas
+jaringan gateway tetap terpisah dari timeout suara ini.
+
 ## Membaca notifikasi dari perangkat
 
 Misalnya agent mengirim judul “Laporan sudah selesai” dan isi ringkasan laporan.

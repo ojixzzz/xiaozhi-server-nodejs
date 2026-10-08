@@ -2,6 +2,9 @@
 
 [Indonesian](README.md) · **English** · [Full guide](../../docs/remote-mcp.en.md)
 
+Source repository: [ojixzzz/xiaozhi-server-nodejs](https://github.com/ojixzzz/xiaozhi-server-nodejs).
+These example files are in its `examples/mcp-endpoint` folder.
+
 Use Python **3.11+**. In this folder:
 
 ```sh

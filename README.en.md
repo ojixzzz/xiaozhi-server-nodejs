@@ -2,6 +2,8 @@
 
 [Bahasa Indonesia](README.md) · **English**
 
+Source repository: [ojixzzz/xiaozhi-server-nodejs](https://github.com/ojixzzz/xiaozhi-server-nodejs).
+
 A server that connects XiaoZhi devices to voice AI, stores notifications, and
 communicates with external agents such as Hermes. Manage devices through a web
 dashboard.
@@ -63,6 +65,11 @@ using that same endpoint, with no extra device/credential configuration.
 [the agent guide](docs/remote-mcp.en.md) explain both directions.
 
 ## Notification behavior
+
+Voice sessions return to **standby after 60 seconds without detected speech**.
+Configure it under **Xiaozhi Devices → Config → Standby otomatis setelah diam**.
+The timer pauses for AI output/playback and pending tools; silent packets do not
+reset it. The MQTT connection remains online for notifications.
 
 1. The agent sends a title and body; the server stores them in the inbox.
 2. An online, idle device can play a chime through MQTT.

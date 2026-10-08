@@ -159,6 +159,14 @@ the requested interval; zero-keepalive clients have a one-hour inactivity cap.
 Audio idle timeout is two minutes; maximum audio session duration is one hour.
 Active control keepalives do not artificially extend audio lifetime.
 
+The relay adds a separate **speech idle** timeout, default 60 seconds, configurable
+under the device's dashboard Config or `VOICE_IDLE_TIMEOUT_SECONDS` (0 disables;
+otherwise 15–3600). Silent PCM does not reset it; AI output/playback and pending
+tools pause it. A relay `goodbye` closes the voice channel while preserving MQTT
+for notifications. This is independent of the gateway's packet-activity limits.
+Speech detection uses a simple energy threshold (`VOICE_ACTIVITY_THRESHOLD`,
+default 500); nearby voices/noise can keep it active.
+
 Run `node --test gateway/unit.test.js test/gateway-integration.test.js`.
 Tests are loopback-only with ephemeral secrets and mock media/providers; they
 cover authenticated provisioning, idle notification, bidirectional encrypted

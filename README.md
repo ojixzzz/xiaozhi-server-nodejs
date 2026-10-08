@@ -2,6 +2,8 @@
 
 **Bahasa Indonesia** · [English](README.en.md)
 
+Repo source: [ojixzzz/xiaozhi-server-nodejs](https://github.com/ojixzzz/xiaozhi-server-nodejs).
+
 Server untuk menghubungkan perangkat XiaoZhi dengan AI suara, menyimpan notifikasi,
 dan berkomunikasi dengan agent seperti Hermes. Pengaturan perangkat dilakukan
 melalui dashboard web.
@@ -67,6 +69,11 @@ pakai: [examples/mcp-endpoint](examples/mcp-endpoint/README.md).
 [Panduan agent](docs/remote-mcp.md) menjelaskan pemasangan dan kedua arah ini.
 
 ## Cara notifikasi bekerja
+
+Perangkat otomatis kembali **standby setelah 60 detik tanpa suara terdeteksi**.
+Ubah di **Xiaozhi Devices → Config → Standby otomatis setelah diam**. Timer
+menunggu jawaban AI selesai diputar dan tools selesai; audio hening tidak
+memperpanjangnya. Koneksi MQTT tetap online untuk menerima notifikasi.
 
 1. Agent mengirim judul dan isi pesan; server menyimpannya ke inbox.
 2. Perangkat yang online dan idle dapat memainkan beep melalui MQTT.

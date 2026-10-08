@@ -193,6 +193,12 @@
             </select>
         </div>
         <div id="dynamicConfigFields"></div>
+
+        <div class="form-group">
+            <label for="configVoiceIdleSeconds">Standby otomatis setelah diam (detik)</label>
+            <input id="configVoiceIdleSeconds" type="number" min="0" max="3600" step="1" placeholder="Standar server: 60 detik">
+            <p class="help-text">Kosong mengikuti server. Isi 15–3600 detik, atau 0 untuk menonaktifkan. Hitungan dimulai lagi setelah jawaban AI selesai; audio hening tidak memperpanjangnya.</p>
+        </div>
         
         <div class="checkbox-group">
             <input type="checkbox" id="configInputTrans">
@@ -210,6 +216,7 @@
             <p id="noMcpMsg" style="font-size:13px; color:#777; display:none;">No approved MCP devices available.</p>
         </div>
 
+        <p id="configStatus" class="help-text" role="status"></p>
         <div class="modal-footer">
             <button onclick="closeConfigModal()" style="background: #6c757d;">Cancel</button>
             <button onclick="saveConfig()">Save</button>
@@ -948,6 +955,9 @@
         document.getElementById('configBackend').value = dev.llm_backend || "";
         document.getElementById('configInputTrans').checked = dev.input_transcription !== false;
         document.getElementById('configOutputTrans').checked = dev.output_transcription !== false;
+        document.getElementById('configVoiceIdleSeconds').value = dev.voice_idle_timeout_seconds ?? '';
+        document.getElementById('configVoiceIdleSeconds').placeholder = `Standar server: ${providerConfigData?.voice_idle_timeout_seconds ?? 60} detik`;
+        document.getElementById('configStatus').textContent = '';
 
         // Render dynamic fields first (this now also restores values)
         handleBackendChange();
@@ -993,6 +1003,15 @@
 
     async function saveConfig() {
         if (!editingMac) return;
+        const status = document.getElementById('configStatus');
+        const idleField = document.getElementById('configVoiceIdleSeconds');
+        const idleSeconds = idleField.value.trim() === '' ? null : Number(idleField.value);
+        if (!idleField.checkValidity() || idleSeconds !== null && (!Number.isInteger(idleSeconds) || idleSeconds !== 0 && (idleSeconds < 15 || idleSeconds > 3600))) {
+            status.textContent = 'Isi waktu standby 15–3600 detik, 0 untuk nonaktif, atau kosong untuk standar server.';
+            idleField.focus();
+            return;
+        }
+        status.textContent = '';
         
         const enabledMcp = [];
         const container = document.getElementById('mcpCheckboxes');
@@ -1009,6 +1028,7 @@
             input_transcription: document.getElementById('configInputTrans').checked,
             output_transcription: document.getElementById('configOutputTrans').checked,
             enabled_mcp_devices: enabledMcp,
+            voice_idle_timeout_seconds: idleSeconds,
             
             // Keep existing values for other backend, update the active one
             gemini_model: dev.gemini_model || "",
@@ -1036,11 +1056,21 @@
             }
         }
         
-        await fetch(`/api/devices/${encodeURIComponent(editingMac)}/config`, {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify(payload)
-        });
+        try {
+            const response = await fetch(`/api/devices/${encodeURIComponent(editingMac)}/config`, {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json', 'X-Requested-With': 'XiaozhiDashboard' },
+                body: JSON.stringify(payload)
+            });
+            if (!response.ok) {
+                const body = await response.json().catch(() => ({}));
+                status.textContent = body.error || 'Konfigurasi belum tersimpan.';
+                return;
+            }
+        } catch (_) {
+            status.textContent = 'Tidak dapat menyimpan konfigurasi. Periksa koneksi lalu coba lagi.';
+            return;
+        }
         
         closeConfigModal();
         loadData();

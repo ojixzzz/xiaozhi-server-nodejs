@@ -193,6 +193,15 @@ token query string. See [MCP pipe setup](remote-mcp.en.md).
 
 ## Persistent data and migration
 
+Voice sessions return to standby after 60 seconds without detected speech by
+default. Device **Config → Standby otomatis setelah diam** overrides
+`VOICE_IDLE_TIMEOUT_SECONDS` (0 disables; otherwise 15–3600 seconds).
+`VOICE_ACTIVITY_THRESHOLD` tunes microphone energy detection (default 500,
+50–10000). Output/playback and pending tools pause the timer; pauses expire if
+no further activity/completion arrives for two minutes, followed by the full
+speech idle window. Apply env changes by recreating the Compose service; device
+settings persist in `devices.json`. MQTT remains connected after a speech timeout.
+
 The Compose named volume `xiaozhi-data`, mounted at `/app/data`, retains:
 
 - `devices.json` and `mcp_devices.json`

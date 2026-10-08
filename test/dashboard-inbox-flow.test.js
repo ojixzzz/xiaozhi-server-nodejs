@@ -52,7 +52,7 @@ function audioFrame() {
   try { return Buffer.from(codec.encode(pcm, 960)); } finally { codec.delete(); }
 }
 
-async function fixture(t) {
+async function fixture(t, options = {}) {
   const directory = await fs.mkdtemp(path.join(os.tmpdir(), 'xiaozhi-dashboard-inbox-'));
   const eventsPath = path.join(directory, 'provider-events.jsonl');
   const planPath = path.join(directory, 'provider-plan.json');
@@ -102,6 +102,12 @@ async function fixture(t) {
     }
     Module._load = function(request, parent, isMain) {
       if (request === './providers/gemini' && parent?.filename.endsWith('/app.js')) return FakeGemini;
+      if (request === './lib/voice-idle' && parent?.filename.endsWith('/app.js') && ${JSON.stringify(options.voiceIdleTimeoutMs || null)} !== null) {
+        const actual = originalLoad.apply(this, arguments);
+        return { ...actual, VoiceIdleTimer: class extends actual.VoiceIdleTimer {
+          constructor(config) { super({ ...config, timeoutMs: config.timeoutMs ? ${JSON.stringify(options.voiceIdleTimeoutMs || null)} : 0 }); }
+        } };
+      }
       return originalLoad.apply(this, arguments);
     };
   `);
@@ -248,6 +254,28 @@ async function fixture(t) {
     }
   };
 }
+
+test('speech idle ends voice even with silent Opus traffic, preserving MQTT and inbox notifications', { timeout: 30000 }, async t => {
+  // Only shorten the relay's speech timer; gateway idle remains at its normal 2 minutes.
+  const f = await fixture(t, { voiceIdleTimeoutMs: 600 });
+  const config = await f.selectMqtt(MAC, UUID);
+  const device = await f.connect(config);
+  const session = await f.openScript(device, []);
+  const codec = new OpusScript(16000, 1);
+  let silent;
+  try { silent = Buffer.from(codec.encode(Buffer.alloc(1920), 960)); } finally { codec.delete(); }
+  const audio = setInterval(() => { void device.sendAudio(silent).catch(() => {}); }, 60);
+  try { await device.waitForMessage(message => message.type === 'goodbye'); }
+  finally { clearInterval(audio); }
+  await until(async () => (await f.readEvents()).some(event => event.type === 'close' && event.session === session.connected.session), 'provider released after speech timeout');
+  assert.equal(device.closed, false);
+  await device.ping();
+  assert.equal(await f.online(config), true);
+  const sent = await f.compose({ title: 'Setelah standby', text: 'Inbox remains available', idempotency_key: 'after-silence' });
+  assert.equal(sent.status, 201);
+  assert.equal(sent.body.stored, true);
+  await device.waitForMessage(message => message.type === 'notify');
+});
 
 test('calculator-style endpoint connects voice tools and delayed durable inbox without a public agent HTTP server', { timeout: 30000 }, async t => {
   const f = await fixture(t);

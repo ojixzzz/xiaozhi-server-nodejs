@@ -2,6 +2,10 @@
 
 **Bahasa Indonesia** · [English](remote-mcp.en.md) · [Semua dokumentasi](README.md)
 
+Repo source: [ojixzzz/xiaozhi-server-nodejs](https://github.com/ojixzzz/xiaozhi-server-nodejs).
+Tombol **Salin untuk agent** di dashboard menyertakan tautan repo, panduan ini,
+dan folder contoh agar agent dapat menemukan file integrasinya.
+
 Cukup salin **MCP_ENDPOINT** dari dashboard, lalu jalankan server MCP lokal agent
 lewat `mcp_pipe.py`. Polanya sama seperti proyek `xiaozhi-esp32-server` dan contoh
 `mcp-calculator`: agent menyambung ke relay lewat WebSocket, sedangkan tools di

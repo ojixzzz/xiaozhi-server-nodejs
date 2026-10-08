@@ -48,6 +48,18 @@ test('HTTP auth, device ownership, memory persistence and graceful shutdown (no 
   const login = await fetch(base+'/api/login',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({password:'local-smoke-only'})});
   const cookie = login.headers.get('set-cookie').split(';')[0];
   const headers = {'Cookie':cookie,'Content-Type':'application/json','X-Requested-With':'XiaozhiDashboard'};
+  const deviceConfigUrl = base + '/api/devices/alpha/config';
+  assert.equal((await (await fetch(base + '/api/providers', { headers })).json()).voice_idle_timeout_seconds, 60);
+  for (const value of [1, -1, 3601, '60', false]) {
+    assert.equal((await fetch(deviceConfigUrl, { method: 'POST', headers, body: JSON.stringify({
+      voice_idle_timeout_seconds: value, prompt: 'must not mutate on invalid timeout'
+    }) })).status, 400);
+  }
+  assert.equal((await (await fetch(base + '/api/devices', { headers })).json()).alpha.prompt, undefined);
+  assert.equal((await fetch(deviceConfigUrl, { method: 'POST', headers, body: JSON.stringify({ voice_idle_timeout_seconds: 30 }) })).status, 200);
+  assert.equal((await (await fetch(base + '/api/devices', { headers })).json()).alpha.voice_idle_timeout_seconds, 30);
+  assert.equal((await fetch(deviceConfigUrl, { method: 'POST', headers, body: JSON.stringify({ voice_idle_timeout_seconds: null }) })).status, 200);
+  assert.equal(Object.hasOwn((await (await fetch(base + '/api/devices', { headers })).json()).alpha, 'voice_idle_timeout_seconds'), false);
   const agentUrl = base + '/api/agent_connections';
   assert.equal((await fetch(agentUrl)).status, 401);
   assert.equal((await fetch(agentUrl, { method:'POST',headers:{Cookie:cookie,'Content-Type':'application/json'},body:'{}' })).status, 403);

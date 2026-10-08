@@ -89,6 +89,7 @@ masih diperlukan. Edit `.env` secara lokal:
 
 ```dotenv
 LLM_BACKEND=gemini
+VOICE_IDLE_TIMEOUT_SECONDS=60
 WEB_BIND_ADDRESS=192.168.1.50
 WEB_PORT=3000
 WEBSOCKET_URL_FOR_ALLOWED_DEVICE=ws://192.168.1.50:3000/xiaozhi/v1/
@@ -221,6 +222,24 @@ Jika penyimpanan transport ditolak karena UUID/token, kembalilah ke koneksi
 WebSocket yang bekerja dan sambungkan perangkat melalui provisioning aslinya.
 Jangan mengisi UUID atau client ID secara acak. Bila perangkat utama terganggu,
 pakai [rollback](#9-rollback-ke-websocket) sebelum melanjutkan diagnosis.
+
+### Standby otomatis ketika pengguna diam
+
+Defaultnya 60 detik tanpa suara terdeteksi. Ubah per perangkat di **Xiaozhi
+Devices → Config → Standby otomatis setelah diam (detik)**, lalu **Save**.
+Kosong mengikuti `.env`; `0` menonaktifkan; nilai lain harus 15–3600 detik.
+Standar server dapat diatur lewat `VOICE_IDLE_TIMEOUT_SECONDS=60`.
+
+Timer berhenti sementara saat AI mengirim jawaban, playback belum selesai, atau
+tools masih bekerja. Sesudah selesai, hitungan dimulai lagi. Audio hening tetap
+boleh dikirim perangkat tanpa memperpanjang sesi. Sesi suara berakhir dengan
+`goodbye`; koneksi MQTT tetap online untuk beep. Ini tidak mengubah timer deep
+sleep/baterai firmware.
+
+Deteksi sederhana memakai RMS audio, default threshold 500. Untuk mikrofon pelan
+coba nilai lebih rendah; jika suara latar mempertahankan sesi, nilai lebih tinggi.
+`VOICE_ACTIVITY_THRESHOLD` menerima 50–10000. Perubahan env perlu diterapkan ulang
+ke server/container; pengaturan perangkat tersimpan pada volume data.
 
 ## 7. Coba inbox, lalu hubungkan agent
 

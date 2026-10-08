@@ -46,6 +46,23 @@ etc. The timestamp is not pre-shifted. This default is not an inferred user sett
 
 Source: [pinned ota.cc](https://github.com/78/xiaozhi-esp32/blob/0d576d3d4c049c6f55eaf879725dc23e516511b4/main/ota.cc).
 
+## Automatic voice standby
+
+The relay's speech idle timer defaults to 60 seconds and closes the voice channel
+after sustained silence, even if silent audio packets continue. Configure it in
+device **Config → Standby otomatis setelah diam**; see the
+[user guide](panduan-pengguna.md#otomatis-kembali-standby-setelah-diam).
+AI output/playback and pending tools pause the timer, with a bounded fallback
+for missing completion events. The MQTT gateway retains its MQTT connection
+after the relay ends the audio channel, allowing later inbox chimes.
+
+In the pinned firmware source, `OnAudioChannelClosed` schedules a transition to
+`kDeviceStateIdle` and lowers the board power-save level:
+[application.cc](https://github.com/78/xiaozhi-esp32/blob/0d576d3d4c049c6f55eaf879725dc23e516511b4/main/application.cc#L525).
+This establishes the source-level close-to-standby behavior for that revision;
+this new timer has not been locally run or verified on the user's installed firmware.
+Ending a voice session does not change board shutdown/deep-sleep policy.
+
 ## Spotpear 1.28 Box power caveat
 
 For the specific board at
