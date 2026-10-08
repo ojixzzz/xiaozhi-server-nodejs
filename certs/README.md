@@ -1,5 +1,15 @@
 # Operator-supplied MQTT TLS certificates
 
+[Beranda Indonesia](../README.md) · [Panduan TLS](../docs/SETUP_ID.md#8-tls-dan-batas-penerapan-produksi)
+
+**Bahasa Indonesia:** folder ini untuk sertifikat dan kunci TLS milik administrator,
+agar koneksi MQTT menggunakan sertifikat yang dipercaya firmware perangkat.
+Docker memasangnya di `/run/mqtt-tls`. Proyek tidak menyediakan atau membuat
+sertifikat/kunci pribadi. Ini pengaturan jaringan server, bukan langkah yang
+perlu dilakukan pengguna dashboard. Jangan unggah kunci pribadi ke chat atau Git.
+
+**English reference:**
+
 This directory is mounted read-only at `/run/mqtt-tls` in the gateway container.
 For TLS, supply a certificate chain trusted by the firmware for your MQTT hostname
 and its matching private key, then set MQTT_TLS_CERT_FILE and MQTT_TLS_KEY_FILE.

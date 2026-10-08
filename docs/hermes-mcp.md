@@ -1,12 +1,31 @@
 # Hermes / MCP notification ingress
 
-This is a sender-only integration. An authorized Hermes job (or another configured client) submits text, the server commits it to the device's SQLite inbox, and then attempts one short chime. Gemini can read the stored message later when the device user asks. Notification text is data, never a command for an agent.
+[Beranda](../README.md) · [Hubungkan agent — Indonesia](remote-mcp.md) · [English agent guide](remote-mcp.en.md)
 
-No external Hermes service is configured or contacted by this repository. The examples below describe the server contract; use the actual HTTP or remote MCP configuration supported by your Hermes installation. Never put a token in a prompt or message body.
+**Untuk penggunaan biasa**, buka **MCP Devices → Hubungkan agent · MCP dua arah**,
+pilih perangkat, lalu **Buat konfigurasi → Salin untuk agent**. Tidak perlu
+mengikuti contoh `.env` dan HTTP di halaman ini jika memakai alur dashboard.
+Referensi Inggris berikut membahas pengiriman inbox manual untuk pengembang.
+Token pairing dashboard juga menyediakan `agent_register`; lihat panduan agent
+untuk koneksi balik dan pembatasan tool tersebut.
+
+For agent tools called from a device and notification callbacks back to that
+device, see [two-way integration and dashboard setup](remote-mcp.md).
+
+The notification contract below is the sender-to-inbox part of the integration. An authorized Hermes job (or another configured client) submits text, the server commits it to the device's SQLite inbox, and then attempts one short chime. Gemini can read the stored message later when the device user asks. Notification text is data, never a command for an agent.
+
+No external Hermes service is configured or contacted by this repository. The examples below describe the server contract; use the actual HTTP or remote MCP configuration supported by your Hermes installation. Keep tokens out of public prompts, logs and notification bodies. The dashboard's private setup export contains a scoped token intended for the trusted agent being connected.
 
 ## Operator configuration
 
-Ingress is off unless at least one sender is configured:
+For the simplest setup, use **MCP Devices → Hubungkan agent · MCP dua arah**,
+choose a device and copy the generated setup text to the agent. It creates a
+per-device sender automatically and adds `agent_register` for the return
+direction. No environment editing is needed. The following configuration is
+the advanced alternative for manually supplied sender credentials.
+
+The environment-based ingress below is off unless at least one sender is
+configured. Dashboard pairings provide a separate sender configuration:
 
 ```dotenv
 NOTIFY_SENDERS_JSON=[{"name":"hermes","token_env":"HERMES_NOTIFY_TOKEN","device_ids":["aa:bb:cc:dd:ee:ff"]}]
@@ -16,11 +35,11 @@ NOTIFY_INGRESS_BEEP_TIMEOUT_MS=15000
 NOTIFY_INGRESS_ORIGINS=
 ```
 
-Separately supply `HERMES_NOTIFY_TOKEN` through your existing secret manager or protected environment file. It must be an operator-provided, unique bearer-compatible secret, 32–512 characters long. Placeholder values are rejected. The application never generates or saves sender credentials. Do not reuse an MQTT signature key, gateway key, session secret, admin password, device authentication token, Gemini/DashScope API key, or another sender's token. Reserved environment variable names and matching values are rejected. `token_env` is the environment variable's name, not the token itself.
+Separately supply `HERMES_NOTIFY_TOKEN` through your existing secret manager or protected environment file. It must be an operator-provided, unique bearer-compatible secret, 32–512 characters long. Placeholder values are rejected. This environment-based path reads the supplied credential; dashboard-created senders instead use generated tokens stored privately in `agent-connections.json`. Do not reuse an MQTT signature key, gateway key, session secret, admin password, device authentication token, Gemini/DashScope API key, or another sender's token. Reserved environment variable names and matching values are rejected. `token_env` is the environment variable's name, not the token itself.
 
 Each sender must have a unique name and 1–64 exact device IDs. Up to 32 senders are supported. There are no wildcard destinations and no device-ID case normalization. A device must also currently be approved and have a dedicated device identity in the application. Approval is rechecked on every send, including retries. `sender` is always taken from the authenticated configuration; caller-supplied `sender` and `source` fields are rejected.
 
-`NOTIFY_SENDERS_JSON=[]` disables ingress. Invalid configuration fails closed for these endpoints without taking down the voice server. Restart after changing credentials or scopes. Revoking a sender stops future requests, but does not erase previously stored inbox messages.
+`NOTIFY_SENDERS_JSON=[]` disables environment-configured senders; dashboard-created senders remain active until their connections are deleted. Invalid configuration fails closed for these endpoints without taking down the voice server. Restart after changing environment credentials or scopes; dashboard setup applies immediately. Revoking a sender stops future requests, but does not erase previously stored inbox messages.
 
 Expose ingress only over HTTPS or a trusted local test connection. Keep the actual application listener private behind your authenticated TLS reverse proxy; local-only deployments should bind to loopback. Do not forward or log Authorization headers. Headless clients normally omit Origin. A supplied Origin is rejected unless it exactly matches an entry in the comma-separated `NOTIFY_INGRESS_ORIGINS` list. This does not enable CORS; no browser-origin access is granted implicitly. The dashboard administrator's password or session cookie does not authorize these endpoints.
 

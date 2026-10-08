@@ -1,5 +1,24 @@
 # Local notification audio
 
+[Beranda Indonesia](../README.md) · [Panduan pengguna](../docs/panduan-pengguna.md) · [Dokumentasi](../docs/README.md)
+
+## Cara sederhana — Bahasa Indonesia
+
+Paket menyediakan `sample-chime.ogg`: nada beep pendek tanpa ucapan. Untuk
+pengingat inbox, tidak perlu membuat rekaman baru. Administrator dapat memakai
+rekaman lain dengan menaruh file `.ogg` berformat **mono Opus** pada folder ini
+lalu mengatur `NOTIFY_BEEP_ASSET` ke nama file tersebut. Mengganti ekstensi MP3/WAV
+menjadi `.ogg` saja tidak mengubah format audio.
+
+Untuk uji audio saja, buka **Memory & Notify → Audio-only test (no inbox message)**,
+pilih file, klik **Use local audio**, kemudian **Send notification**.
+Untuk mencoba pesan inbox dan beep bersama-sama, gunakan **Save message & beep**.
+Jangan menaruh file pribadi atau kunci akses di folder rekaman ini.
+
+Bagian Inggris berikut menjelaskan format audio, link sementara, dan konversi
+menggunakan FFmpeg untuk administrator. Perintah konversi bukan langkah wajib
+bila menggunakan sample bawaan.
+
 `sample-chime.ogg` is a generated one-second **two-beep test tone, with no speech**. It is
 mono Ogg Opus, encoded from 16 kHz PCM using 20 ms Opus frames. It is not a spoken
 reminder or evidence that notification playback works on a physical device.

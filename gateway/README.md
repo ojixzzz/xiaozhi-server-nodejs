@@ -1,5 +1,13 @@
 # Local Xiaozhi MQTT/UDP gateway
 
+[Beranda Indonesia](../README.md) · [Instalasi](../docs/SETUP_ID.md) · [Semua dokumentasi](../docs/README.md)
+
+**Ringkasan Bahasa Indonesia:** gateway adalah layanan penghubung agar perangkat
+bisa memakai MQTT untuk kontrol/notifikasi dan UDP untuk suara. Compose sudah
+menyediakannya melalui `--profile mqtt`; pengguna dashboard tidak perlu memasang
+broker MQTT lain atau Redis. Referensi Inggris berikut ditujukan kepada
+administrator yang mengatur jaringan dan kredensial gateway.
+
 Run `node gateway/server.js` from the project root after configuring `.env`, or
 use the repository's MQTT Compose profile. This service connects stock Xiaozhi
 protocol-3 MQTT/UDP devices to this project's existing `/xiaozhi/v1/` WebSocket

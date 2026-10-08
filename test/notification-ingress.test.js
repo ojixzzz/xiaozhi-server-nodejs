@@ -70,6 +70,38 @@ async function fixture(t, options = {}) {
 const rpc = (method, params, id = 1) => ({ jsonrpc: '2.0', id, method, ...(params === undefined ? {} : { params }) });
 const toolCall = (arguments_ = payload, name = 'notify_send') => rpc('tools/call', { name, arguments: arguments_ });
 
+test('dashboard senders work without env edits, expose registration only to their token and revoke immediately', async t => {
+  const pairingToken = randomBytes(32).toString('hex');
+  const paired = { name: `agent-${randomUUID()}`, token: pairingToken, devices: new Set([deviceId]), count: 0, windowStart: 0, pending: 0, activeBeeps: 0 };
+  let enabled = true;
+  const registrations = [];
+  const f = await fixture(t, {
+    additionalSenders: () => enabled ? [paired] : [],
+    additionalTools: sender => enabled && sender === paired ? [{ name: 'agent_register', inputSchema: { type: 'object' } }] : [],
+    callAdditionalTool: async (sender, name, args) => { registrations.push({ sender, name, args }); return { registered: true }; }
+  });
+  const headers = { Authorization: `Bearer ${pairingToken}` };
+  const tools = await f.mcp(rpc('tools/list'), { headers });
+  assert.deepEqual(tools.body.result.tools.map(tool => tool.name), ['notify_send', 'agent_register']);
+  assert.deepEqual((await f.mcp(rpc('tools/list'))).body.result.tools.map(tool => tool.name), ['notify_send']);
+  assert.equal((await f.mcp(toolCall({ url: 'https://agent.example.com/mcp' }, 'agent_register'))).body.error.message, 'Unknown tool');
+  const registered = await f.mcp(toolCall({ url: 'https://agent.example.com/mcp' }, 'agent_register'), { headers });
+  assert.equal(registered.body.result.structuredContent.registered, true);
+  assert.equal(registrations[0].sender, paired);
+  assert.equal((await f.request({ ...payload, device_id: otherDevice }, { headers })).status, 403);
+  assert.equal((await f.request(payload, { headers })).status, 201);
+  enabled = false;
+  assert.equal((await f.request(payload, { headers })).status, 401);
+  assert.equal((await f.mcp(toolCall({}, 'agent_register'), { headers })).status, 401);
+  assert.equal(registrations.length, 1);
+  assert.equal(f.inbox.entries.size, 1);
+
+  enabled = true;
+  const onlyDashboard = await fixture(t, { env: {}, additionalSenders: () => [paired] });
+  assert.equal(onlyDashboard.router.status().configured, true);
+  assert.equal((await onlyDashboard.request(payload, { headers })).status, 201);
+});
+
 test('disabled and invalid sender configurations fail closed without preventing unrelated routes', async t => {
   const disabled = await fixture(t, { env: {} });
   assert.equal(disabled.router.status().enabled, false);

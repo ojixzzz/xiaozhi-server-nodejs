@@ -1,27 +1,43 @@
-# Panduan siap dijalankan: memori Gemini dan inbox notifikasi Xiaozhi
+# Memasang server XiaoZhi: panduan bertahap
 
-Alur utamanya: **Hermes/agen yang diizinkan mengirim teks → teks disimpan →
-Xiaozhi berbunyi beep bila memungkinkan → Anda bertanya “notifnya apa?” → Gemini
-mengambil isi notifikasi yang tersimpan.** Isi pesan tidak langsung dibacakan
-secara otomatis.
+[Beranda](../README.md) · [Panduan pengguna](panduan-pengguna.md) · [Semua dokumentasi](README.md)
 
-Paket ini berisi relay, dashboard, memori percakapan SQLite, inbox notifikasi
-SQLite terpisah, gateway MQTT/UDP, dan audio beep uji. Anda tidak perlu memasang
-Redis, broker MQTT tambahan, atau menulis adapter gateway sendiri.
+Panduan ini untuk **memasang atau menyiapkan server**, mulai dari satu perangkat.
+Jika server dan percakapan sudah berjalan, langsung gunakan [panduan pengguna](panduan-pengguna.md)
+atau [hubungkan agent](remote-mcp.md); tidak perlu mengulang instalasi.
 
-**Mulai dari satu perangkat uji.** Docker, panggilan Gemini langsung, firmware
-perangkat Anda, serta pemutaran pada ESP32 belum diuji di lingkungan pengerjaan
-ini. Sambungan ke Hermes sungguhan juga belum dikonfigurasi atau diuji. Tes
-protokol lokal menggunakan provider palsu. Ikuti pemeriksaan di bawah
-sebelum memindahkan perangkat utama; hasil tes terbaru ada di
-[TEST_RESULTS.md](../TEST_RESULTS.md).
+Hasil yang dituju: perangkat dapat bercakap-cakap dengan Gemini, menerima beep
+notifikasi melalui MQTT, dan membaca judul inbox saat Anda menyapa. Isi lengkap
+baru dibacakan ketika Anda meminta detail. Memori percakapan bersifat opsional.
 
-Audit source memakai firmware commit `0d576d3d4c049c6f55eaf879725dc23e516511b4`;
-ini bukan bukti versi yang sedang terpasang pada perangkat Anda. Lihat
-[matriks kompatibilitas](firmware-compatibility.md) untuk bukti protokol, parser
-audio asli firmware, koreksi satuan waktu OTA, dan batas pengujiannya.
+## Urutan yang diikuti
+
+1. Siapkan kebutuhan dan simpan konfigurasi lama.
+2. Isi pengaturan server untuk jaringan lokal tepercaya.
+3. Jalankan server dan gateway.
+4. Pastikan satu perangkat dapat bercakap-cakap lewat WebSocket.
+5. Aktifkan memori jika diperlukan dan pengguna perangkat setuju.
+6. Pindahkan perangkat uji ke MQTT untuk beep, lalu uji percakapan lagi.
+7. Coba inbox dari dashboard, kemudian hubungkan agent jika diperlukan.
+8. Untuk penggunaan di luar jaringan lokal, pelajari pengaturan TLS dan jaringan.
+
+**Perintah pada blok `sh` dijalankan di Terminal pada komputer/server**, dari
+folder proyek yang berisi `compose.yaml`. Blok `dotenv` merupakan isi pengaturan
+untuk berkas `.env`, bukan perintah Terminal. Ganti IP dan nilai contoh sebelum
+menjalankan layanan. [Penjelasan istilah](README.md#istilah-yang-sering-muncul).
+
+Paket mencakup gateway dan beep contoh; tidak perlu Redis atau broker MQTT
+terpisah. Panduan LAN di bawah memakai HTTP/MQTT tanpa TLS untuk jaringan privat
+tepercaya, bukan konfigurasi internet. [Laporan tes](../TEST_RESULTS.md) mencatat
+pemeriksaan historis pada 7 Oktober 2026, bukan pengujian ulang seluruh source
+terbaru atau bukti firmware terpasang pada perangkat Anda. Bukti protokol dan
+batas perangkat ada di [referensi firmware](firmware-compatibility.md).
 
 ## 1. Siapkan kebutuhan dan jalur kembali
+
+Unduh atau clone source repo, lalu buka folder proyeknya. Jika memakai ZIP,
+ekstrak dahulu; pastikan Anda melihat `compose.yaml` dan `.env.mqtt.example`.
+Semua perintah pada panduan ini dijalankan dari folder tersebut.
 
 - Komputer/server dengan Docker Engine dan Docker Compose yang sudah terpasang
 - Satu perangkat Xiaozhi milik Anda dengan firmware yang mendukung MQTT/UDP dan
@@ -52,7 +68,7 @@ HTTP/MQTT tanpa TLS dapat membocorkan password, kredensial, tautan audio dan isi
 komunikasi kepada pengamat jaringan. Untuk penggunaan di luar LAN tepercaya,
 langsung ikuti bagian [TLS](#8-tls-dan-batas-penerapan-produksi).
 
-Di root checkout ini:
+Di folder proyek yang berisi `compose.yaml`:
 
 ```sh
 # Hanya untuk instalasi baru; tidak menimpa .env yang sudah ada.
@@ -206,170 +222,91 @@ WebSocket yang bekerja dan sambungkan perangkat melalui provisioning aslinya.
 Jangan mengisi UUID atau client ID secara acak. Bila perangkat utama terganggu,
 pakai [rollback](#9-rollback-ke-websocket) sebelum melanjutkan diagnosis.
 
-## 7. Uji inbox dari web dahulu; Hermes opsional
+## 7. Coba inbox, lalu hubungkan agent
 
-Anda dapat menguji alur lengkap **tanpa Hermes dan tanpa token pengirim eksternal**.
-Biarkan `NOTIFY_SENDERS_JSON=[]` untuk tahap ini:
+### Coba dari dashboard dahulu
 
-1. Login dashboard, pilih perangkat approved, lalu buka **Memory & Notify**
-2. Di **Test message & beep**, isi judul opsional dan pesan uji seperti
-   “Tes dari dashboard: laporan sudah selesai”
-3. Klik **Save message & beep** satu kali. Periksa **penyimpanan pesan** dan
-   **hasil beep** secara terpisah. Pesan disimpan lebih dulu, meskipun beep gagal
-4. Di **Notification inbox**, gunakan **All messages** atau **Unread only**,
-   **Previous page / Next page**, lalu buka pesan untuk membaca detail dan statusnya
-5. Selama unread, beep dicoba lagi tiap 60 detik; percakapan aktif menundanya.
-   Bangunkan perangkat lalu katakan “halo”, “apa”, “ada apa”, atau “notifnya apa?”.
-   Gemini menyebutkan judul dulu dan menawarkan detail. Judul yang disebutkan dalam
-   respons audio selesai ditandai read. Minta detail untuk mendengar isi pesan.
-   Membuka koneksi atau pesan di dashboard dan mendengar beep saja tidak menandai read.
-6. Bila beep terlewat, buka pesan yang sama dan klik **Retry beep only** lalu
-   konfirmasi. Ini tidak membuat pesan inbox baru dan tidak mengubah read/unread.
-   Jika percobaan sebelumnya berstatus unknown, bunyi ganda tetap mungkin terjadi
-7. Bila respons penyimpanan terputus, ulangi permintaan yang sama; dashboard
-   mempertahankan request ID. Gunakan **Start a new message** hanya untuk pesan baru
+Anda dapat mencoba tanpa Hermes atau token pengirim eksternal.
+`NOTIFY_SENDERS_JSON=[]` boleh dibiarkan untuk langkah ini.
 
-Penyimpanan pesan tetap dapat diuji saat MQTT mati/perangkat offline; beep
-memerlukan gateway aktif, perangkat MQTT tersambung dan idle, serta firmware
-notify. Panel **Audio-only test (no inbox message)** berbeda: tombol audio lama
-hanya menguji rekaman dan tidak membuat teks untuk ditanyakan kemudian.
+1. Login dashboard, lalu buka **Memory & Notify** pada perangkat approved.
+2. Di **Test message & beep**, isi judul “Laporan uji selesai” dan pesan yang
+   tidak sensitif, lalu klik **Save message & beep** sekali.
+3. Periksa inbox. Pesan tersimpan lebih dulu; penyimpanan dan beep memiliki hasil
+   berbeda. Pesan tetap tersimpan saat perangkat offline atau beep gagal.
+4. Saat perangkat MQTT online dan idle, dengarkan beep. Bawaan paket adalah nada
+   uji `sample-chime.ogg`, bukan ucapan isi pesan.
+5. Bangunkan perangkat, katakan “halo” atau “ada apa”, dan dengarkan respons judul
+   sampai selesai. Judul yang terucap ditandai read; minta isi lengkap bila diperlukan.
+6. Buka ulang inbox dashboard. Gunakan **All messages** untuk melihat pesan read.
+   Membuka pesan di dashboard saja tidak menandainya read; gunakan **Mark read**.
 
-Pengaturan sender/secret dan batas numerik tetap di konfigurasi server. Dashboard
-menampilkan batas dan status, tetapi tidak membuat/mengungkap secret. Tidak ada
-penghapusan pesan satu per satu di panel ini; retensi inbox tetap berlaku.
+Jika masih ada unread, pengingat dicoba tiap 60 detik; percakapan aktif menundanya.
+`NOTIFY_REMINDER_INTERVAL_MS=60000` mengatur interval dalam milidetik; `0`
+mematikannya. Setelah mengubah `.env`, terapkan ulang container sebagaimana langkah 3.
 
-### Pengirim eksternal opsional: HTTP atau MCP
+Inbox dan memori terpisah. Memori boleh tetap nonaktif. Bawaan inbox adalah 100
+pesan per perangkat, termasuk yang read, dengan retensi 30 hari sejak diterima.
+Unread juga kedaluwarsa. Inbox penuh menolak pesan baru; read tidak menghapusnya.
+[Detail inbox](inbox.md) dan [panduan pemakaian](panduan-pengguna.md).
 
-Setelah tes web berhasil, Hermes, aplikasi lain, atau skrip yang Anda izinkan
-boleh mengirim melalui HTTP/MCP berikut. Tidak ada ketergantungan wajib pada Hermes.
+### Hubungkan agent melalui konfigurasi siap salin
 
-### A. Izinkan satu pengirim untuk perangkat uji
+1. Buka **MCP Devices → Hubungkan agent · MCP dua arah**.
+2. Pilih perangkat Gemini. Isi nama agent bila ingin mengganti nama bawaan.
+3. Periksa alamat dashboard yang bisa diakses agent. Ubah jika agent berada di
+   mesin lain tetapi URL dashboard memakai `localhost`.
+4. Klik **Buat konfigurasi → Salin untuk agent**.
+5. Tempel teks ke agent yang ingin Anda hubungkan. Token inbox dibuat otomatis;
+   tidak perlu mengedit `.env` untuk pengirim ini.
+6. Agent menyediakan server MCP dan mendaftarkannya sesuai instruksi. Tools
+   otomatis dipilih untuk perangkat tersebut.
+7. Setelah **Terhubung dua arah** muncul, buka ulang percakapan dan coba
+   permintaan sesuai tools yang tersedia pada agent.
 
-Setelah alamat perangkat approved diketahui, tambahkan konfigurasi berikut ke
-`.env`. Ganti MAC contoh dengan alamat persis di dashboard:
+Jika agent hanya mendukung MCP client, inbox dapat digunakan tetapi koneksi
+balik masih memerlukan server/adaptor agent. [Panduan agent](remote-mcp.md)
+menjelaskan status dan pilihan pengaturan manual.
+
+### Pilihan lanjutan: pengirim HTTP/MCP manual
+
+Lewati bagian ini jika memakai konfigurasi siap salin dari dashboard.
+Untuk aplikasi yang ingin mengirim pesan dengan kredensial dari `.env`, atur:
 
 ```dotenv
 NOTIFY_SENDERS_JSON=[{"name":"hermes","token_env":"HERMES_NOTIFY_TOKEN","device_ids":["aa:bb:cc:dd:ee:ff"]}]
 HERMES_NOTIFY_TOKEN=
-NOTIFY_BEEP_ASSET=sample-chime.ogg
 ```
 
-Isi `HERMES_NOTIFY_TOKEN` dengan secret kuat milik operator, minimal 32 karakter,
-yang berbeda dari password admin dan kedua key gateway. Jangan memakai token
-perangkat atau Gemini API key sebagai token pengirim. Token pengirim hanya
-mengizinkan pengiriman ke alamat perangkat dalam allowlist-nya; jangan memberikan
-key gateway kepada Hermes.
-
-Terapkan perubahan:
+Ganti MAC dengan ID persis di dashboard. Isi token dengan secret berbeda dari
+password admin, token perangkat, API key, dan kedua key gateway; minimal 32
+karakter. Terapkan perubahan dengan:
 
 ```sh
 docker compose --profile mqtt up -d --build
 ```
 
-Konfigurasi ini menyiapkan penerimaan pada relay, **belum menyambungkan aplikasi
-Hermes Anda**. Ikuti [docs/hermes-mcp.md](hermes-mcp.md) untuk payload HTTP, autentikasi,
-endpoint MCP dan contoh permintaan yang cocok dengan implementasi. Tujuannya:
+Pengirim memakai `POST /api/notifications` atau MCP `/mcp/notifications`, dengan
+Bearer token pengirim. [Format pesan dan contoh HTTP/MCP](hermes-mcp.md).
+Pengaturan itu mengizinkan penerimaan; aplikasi agent masih perlu dipasang
+koneksinya. `NOTIFY_SENDERS_JSON=[]` hanya mematikan pengirim dari env. Hapus
+pairing dashboard untuk mencabut token pengirim yang dibuat di sana.
 
-- HTTP: `POST /api/notifications`
-- Stateless MCP: `POST /mcp/notifications`
+### Jika ingin mencoba rekaman audio saja
 
-Keduanya memakai token pengirim yang Anda izinkan, bukan sesi admin dashboard.
-MCP menyediakan tool `notify_send`; payload pengirim menggunakan `device_id`,
-`text`, `idempotency_key`, dan `title` opsional. Batasnya 2.000 karakter teks dan
-120 karakter judul. Gunakan key idempotensi yang sama saat mengulang pesan yang
-hasil HTTP-nya belum pasti; jangan mengganti key hanya untuk melewati deduplikasi.
-Daftar pengirim kosong (`NOTIFY_SENDERS_JSON=[]`) menonaktifkan ingress eksternal.
-Gunakan alamat server yang dapat dijangkau agen. Untuk pengirim di luar LAN
-tepercaya, gunakan HTTPS yang valid. Detail cara mendaftarkan tool/server MCP
-pada aplikasi agen bergantung pada klien dan versinya; jangan menganggap contoh
-relay otomatis mengubah konfigurasi Hermes eksternal.
+**Memory & Notify → Audio-only test (no inbox message)** menyediakan pengiriman
+rekaman tanpa membuat pesan inbox. Pilih rekaman, klik **Use local audio**,
+lalu **Send notification**. URL saja tidak mengirim beep. Bila ingin menguji
+teks dan beep sekaligus, gunakan **Save message & beep** di atas.
 
-**Khusus Spotpear 1.28 Box pada source yang diaudit:** mode baterai dapat
-menidurkan/mematikan board setelah sekitar 290 detik idle bila timer hemat daya
-aktif. Saat charging, source menonaktifkan timer tersebut. Untuk uji notifikasi
-standby yang lama, pastikan perangkat ditenagai/charging dan benar-benar tetap
-online. MQTT tidak dapat membangunkan perangkat mati/deep sleep. Paket ini tidak
-mengubah kebijakan daya atau melakukan flashing; pesan teks tetap tersimpan jika
-beep gagal, lalu bisa ditanyakan setelah perangkat aktif lagi.
+**Retry beep only** pada detail inbox mengulangi beep untuk pesan yang sama,
+tanpa pesan baru atau perubahan read. Jika hasil sebelumnya tidak pasti,
+percobaan ulang bisa membuat bunyi ganda. [Format rekaman](../notification-audio/README.md).
 
-### B. Uji alur lengkap dengan pesan tidak sensitif
-
-1. Pastikan satu perangkat MQTT tersambung dan idle
-2. Kirim teks uji, misalnya “Tes inbox: laporan uji sudah selesai”, melalui salah
-   satu antarmuka pengirim sesuai contoh di [hermes-mcp.md](hermes-mcp.md)
-3. Periksa hasil penyimpanan teks secara terpisah dari hasil pengiriman beep
-4. Dengarkan perangkat: `sample-chime.ogg` hanya nada uji satu detik, bukan ucapan.
-   Ini tanda bahwa ada notifikasi; isi teks tidak disuarakan otomatis
-5. Bangunkan perangkat dan katakan “halo”, “apa”, “ada apa”, atau “notifnya apa?”.
-   Gemini mengambil judul notifikasi untuk perangkat itu lalu menawarkan detail.
-   Isi pesan baru diambil bila Anda meminta detail
-6. Beep, list biasa, atau get tetap tidak mengubah read. Judul yang terucap pada
-   respons audio selesai ditandai read dan pengingatnya berhenti. Jika respons
-   dibatalkan, judul belum terucap atau masih ada judul lain, pesan tersebut tetap unread
-7. Untuk memeriksa persistensi, restart relay lalu tanyakan lagi. Uji juga mengirim
-   teks ketika perangkat offline, lalu sambungkan kembali dan minta isinya
-
-Tool Gemini bernama `notifications_announce`, `notifications_list`, `notifications_get`, dan
-`notifications_mark_read`. Tool terikat ke perangkat yang terautentikasi; agen
-tidak memilih device ID lain melalui argumennya. Ini memerlukan backend Gemini
-dan token khusus per perangkat. Daftar default hanya menampilkan pesan unread;
-untuk mengecek pesan yang sudah read, mintalah secara jelas agar pesan read juga
-ditampilkan. Pengambilan inbox tetap tersedia melalui percakapan WebSocket;
-MQTT dibutuhkan untuk beep idle, bukan untuk menyimpan teks atau menanyakannya.
-
-Pengingat defaultnya `NOTIFY_REMINDER_INTERVAL_MS=60000` (milidetik). Ubah interval
-di `.env` lalu recreate service relay; `0` mematikan pengingat. Satu perangkat
-mendapat paling banyak satu beep per interval, meskipun memiliki beberapa pesan
-unread. Pengingat pulih dari SQLite setelah restart, berhenti setelah semua pesan
-read atau kedaluwarsa, dan ditunda selama percakapan aktif. Hasil published/unknown
-tidak membuktikan audio terdengar; pengingat berikutnya bisa mengulang beep yang
-sebelumnya sebenarnya sudah berbunyi.
-
-Inbox berada di `DATA_DIR/notifications.sqlite`, terpisah dari `memory.sqlite`.
-Defaultnya menyimpan paling banyak 100 record per perangkat dengan retensi 30
-hari sejak diterima server, termasuk pesan unread. Ketika penuh, pesan baru
-ditolak tanpa disimpan atau dibunyikan; record yang belum kedaluwarsa tidak
-diam-diam digusur, termasuk yang sudah read. Mematikan memori percakapan tidak
-otomatis mematikan inbox. Perangkat yang
-sibuk/offline dapat melewatkan beep tetapi teks tetap tersimpan sesuai batas
-retensi. Tidak ada antrean untuk memutar ulang beep otomatis saat perangkat online.
-Menandai read tidak sama dengan menghapus record; menghapus memori percakapan
-juga tidak menghapus inbox. Lihat [docs/inbox.md](inbox.md) untuk batas, status,
-retensi dan batas dukungan penghapusan.
-
-Notifikasi juga milik perangkat dan dapat diakses orang yang memakai perangkat
-itu; ini bukan kotak masuk pribadi yang mengenali suara pemilik. Isi notifikasi
-akan masuk ke Gemini ketika diambil untuk menjawab. Perlakukan teks kiriman
-agen sebagai informasi, bukan perintah tepercaya untuk melakukan aksi lain.
-Jika memori percakapan aktif, giliran Gemini yang membahas isi inbox juga dapat
-tersimpan sebagai percakapan sesuai batas memori; kedua database tetap terpisah.
-
-### C. Bila perlu, uji jalur audio secara terpisah
-
-Panel **Memory & Notify** tetap menyediakan uji audio manual:
-
-1. Pilih **sample-chime.ogg** di **Local prerecorded audio**
-2. Klik **Use local audio** untuk membuat tautan lima menit; ini belum mengirim
-3. Klik **Send notification** sekali saat perangkat idle, lalu dengarkan langsung
-
-Pengiriman audio manual ini menguji jalur beep, bukan membuat pesan teks inbox.
-Subtitle pada panel hanya teks layar dan tidak menghasilkan ucapan. Untuk audio
-manual berupa ucapan, pasang rekaman mono Ogg Opus yang berisi kata-kata tersebut;
-lihat [panduan audio](../notification-audio/README.md). Alur teks-inbox tidak perlu
-rekaman ucapan atau layanan TTS. Paket ini belum memiliki penjadwal pengingat.
-
-Arti hasil audio:
-
-- `published`: gateway melaporkan penulisan pesan ke koneksi MQTT; belum membuktikan
-  pemutaran atau bahwa seseorang mendengarnya
-- `not_published`: tidak diteruskan menurut hasil gateway/deadline lokal
-- `unknown`: hasil tidak pasti, misalnya timeout. Jangan mengirim berulang kali
-  dengan request baru karena bunyi dapat terduplikasi
-
-Status audio tidak menandai teks sudah dibaca dan tidak mengubah hasil penyimpanan
-inbox. Tautan kedaluwarsa harus dibuat ulang untuk uji manual; siapa pun yang
-memiliki tautan dapat mengunduh rekaman selama masih berlaku. Jangan membagikan
-atau mencatat query string-nya ke log publik.
+Perangkat perlu tetap online. Pada source Spotpear 1.28 Box yang diaudit, hemat
+daya baterai dapat membuat board tidur/mati setelah sekitar 290 detik idle;
+keadaan perangkat Anda perlu diperiksa sendiri. MQTT tidak membangunkan perangkat
+mati/deep sleep. Teks tetap tersimpan dan bisa ditanyakan setelah tersambung lagi.
 
 ## 8. TLS dan batas penerapan produksi
 
@@ -455,13 +392,18 @@ port UDP yang terbuka ke internet menjadi aman karena MQTT memakai TLS.
 
 Mengubah `MQTT_ENABLED` saja tidak otomatis mengubah pilihan transport perangkat.
 Rollback ini tidak menghapus inbox atau menonaktifkan pengiriman teks. Jika ingin
-menolak pesan baru dari semua agen, set `NOTIFY_SENDERS_JSON=[]` dan terapkan
-ulang konfigurasi; pesan yang sudah tersimpan tetap mengikuti retensinya.
+menolak pesan baru dari semua agen, hapus semua koneksi agent di dashboard dan
+set `NOTIFY_SENDERS_JSON=[]`, lalu terapkan ulang konfigurasi; pesan yang sudah
+tersimpan tetap mengikuti retensinya.
 Jangan menghapus volume untuk rollback. `docker compose down` mempertahankan
 volume; **jangan menambahkan `-v`** pada data sungguhan tanpa keputusan penghapusan
 serta cadangan yang sudah diperiksa.
 
 ## 10. Jika belum berhasil
+
+Untuk masalah pemakaian dashboard atau status agent, lihat juga
+[panduan pengguna](panduan-pengguna.md#jika-ada-masalah) dan
+[panduan agent](remote-mcp.md#jika-koneksi-belum-berhasil).
 
 - **Dashboard tidak terbuka:** periksa IP, `WEB_BIND_ADDRESS`, port host, status
   container, serta jalur jaringan dari komputer Anda

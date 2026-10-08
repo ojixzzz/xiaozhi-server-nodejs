@@ -1,5 +1,14 @@
 # Durable notification inbox
 
+[Beranda](../README.md) · [Panduan pengguna](panduan-pengguna.md#membaca-inbox-dari-dashboard) · [Semua dokumentasi](README.md)
+
+**Ringkasan Bahasa Indonesia:** inbox menyimpan pesan agent sebelum beep dicoba.
+Saat Anda menyapa perangkat, Gemini membacakan judul dahulu; judul pada respons
+audio yang selesai ditandai read oleh server. Membuka detail dashboard saja
+belum menandai read; gunakan **Mark read**. Read tidak menghapus pesan. Bawaan
+inbox adalah 100 pesan/perangkat dan retensi 30 hari, termasuk unread.
+Referensi Inggris berikut menjelaskan penyimpanan dan API secara rinci.
+
 This local SQLite inbox stores an approved sender's notification text before the
 relay attempts a best-effort device chime. Later, a fresh Gemini session can
 retrieve the text when the person using that device asks about notifications.
@@ -267,4 +276,4 @@ entries, page through previews, open details and explicitly mark a message read.
 external sender token. **Retry beep only** addresses an existing record and never
 creates another inbox entry or changes its read state. Opening details is read-only.
 The separate audio-only test does not save text. See
-[the Indonesian setup guide](SETUP_ID.md#7-uji-inbox-dari-web-dahulu-hermes-opsional).
+[the Indonesian setup guide](SETUP_ID.md#7-coba-inbox-lalu-hubungkan-agent).

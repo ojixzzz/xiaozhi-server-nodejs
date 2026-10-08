@@ -6,7 +6,7 @@
   "scripts": {
     "start": "node app.js",
     "test": "node --test test/*.test.js gateway/*.test.js",
-    "check": "node --check app.js && node --check providers/gemini.js && node --check lib/memory.js && node --check lib/notifications.js && node --check lib/memory-worker.js && node --check lib/mqtt-integration.js && node --check lib/notification-audio.js && node --check gateway/server.js && node --check gateway/mqtt.js && node --check gateway/credentials.js && node --check lib/inbox.js && node --check lib/inbox-worker.js && node --check lib/inbox-tools.js && node --check lib/notification-ingress.js && node --check lib/proxy-config.js && node --check lib/device-time.js",
+    "check": "node --check app.js && node --check providers/gemini.js && node --check lib/memory.js && node --check lib/notifications.js && node --check lib/memory-worker.js && node --check lib/mqtt-integration.js && node --check lib/notification-audio.js && node --check gateway/server.js && node --check gateway/mqtt.js && node --check gateway/credentials.js && node --check lib/inbox.js && node --check lib/inbox-worker.js && node --check lib/inbox-tools.js && node --check lib/notification-ingress.js && node --check lib/proxy-config.js && node --check lib/device-time.js && node --check lib/remote-mcp.js && node --check lib/agent-connections.js",
     "test:browser": "RUN_BROWSER_TESTS=1 node --test test/ui.test.js",
     "start:gateway": "node gateway/server.js"
   },
@@ -16,18 +16,20 @@
   "type": "commonjs",
   "dependencies": {
     "@google/genai": "^1.45.0",
+    "@modelcontextprotocol/sdk": "^1.32.1",
     "body-parser": "^2.2.2",
     "chokidar": "^3.6.0",
     "cors": "^2.8.6",
     "dotenv": "^17.3.1",
     "express": "^5.2.1",
     "express-session": "^1.19.0",
-    "session-file-store": "^1.5.0",
     "opusscript": "^0.0.8",
     "prism-media": "^1.3.5",
+    "session-file-store": "^1.5.0",
     "winston": "^3.13.0",
     "winston-daily-rotate-file": "^5.0.0",
-    "ws": "^8.19.0"
+    "ws": "^8.19.0",
+    "zod": "^4.6.5"
   },
   "engines": {
     "node": ">=24.0.0"

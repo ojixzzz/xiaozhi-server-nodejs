@@ -1,5 +1,13 @@
 # Firmware compatibility evidence and limits
 
+[Beranda](../README.md) · [Instalasi](SETUP_ID.md) · [Semua dokumentasi](README.md)
+
+**Ringkasan Bahasa Indonesia:** halaman ini mencatat pemeriksaan source firmware,
+bukan bukti program yang sedang terpasang pada perangkat Anda. Perangkat perlu
+mendukung notifikasi dan tetap online untuk beep. Perangkat yang tidur dalam atau
+mati tidak dapat dibangunkan oleh jalur ini. Bagian Inggris berikut menyimpan
+referensi commit dan batas bukti teknisnya.
+
 This is source/protocol evidence, **not proof of the firmware binary currently
 installed on your board**. No minimum firmware release number is claimed.
 
@@ -80,8 +88,8 @@ its upstream MIT license; see that checkout's LICENSE.
 
 Confirm your exact board/build includes notify, retain the old OTA configuration,
 and test one owned device: working WebSocket speech → MQTT speech → return to
-online Idle → two-beep notification → ask for its stored text → explicit read
-acknowledgement. Test a charging/standby interval longer than the board's idle
+online Idle → two-beep notification → greet to hear titles → completed-title
+read acknowledgment → ask for message details. Test a charging/standby interval longer than the board's idle
 shutdown threshold. Check wake/cancel and rollback as well.
 
 Docker build/run, actual ESP32 execution, real Gemini/Hermes, audible playback and

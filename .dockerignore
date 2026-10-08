@@ -22,6 +22,10 @@ outputs
 **/*.sqlite-*
 **/devices.json
 **/mcp_devices.json
+**/remote-mcp-servers.json
+**/remote-mcp-servers.json.*.tmp
+**/agent-connections.json
+**/agent-connections.json.*.tmp
 **/sessions/*
 **/*.log
 **/.env

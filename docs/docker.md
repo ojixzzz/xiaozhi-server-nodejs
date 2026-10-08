@@ -1,5 +1,59 @@
 # Docker, native startup and local verification
 
+[Beranda Indonesia](../README.md) · [English overview](../README.en.md) · [Semua dokumentasi](README.md)
+
+## Mulai di sini — Bahasa Indonesia
+
+Docker menjalankan server dalam container, sedangkan volume menyimpan data agar
+tetap ada saat container diganti. Compose bawaan menjalankan `xiaozhi` untuk
+server/dashboard dan, bila profil `mqtt` dipilih, `gateway` untuk koneksi perangkat.
+
+| Keperluan | Cara |
+| --- | --- |
+| Memasang dari source | Ikuti [panduan instalasi](SETUP_ID.md); perintah `up -d --build` membangun image di mesin Anda |
+| Memakai image yang dibangun GitHub | Gunakan langkah GHCR di bawah; image tersedia untuk **AMD64 saja** |
+| Mengaktifkan gateway untuk beep | Tambahkan `--profile mqtt`; perangkat tetap perlu dipilih ke MQTT di dashboard |
+| Mengubah `.env` | Jalankan `up -d` dengan berkas/profil yang sama agar container diperbarui; `restart` saja tidak memuat env baru |
+| Mempertahankan inbox dan memori | Pakai volume dan nama proyek Compose yang sama; jangan gunakan `down -v` |
+
+Jika server sudah berjalan, pertahankan `.env`, volume, dan konfigurasi jaringan
+lama. Contoh di repo tidak selalu sama dengan instalasi Anda, terutama bila
+memakai `network_mode: host`. Jangan mengganti konfigurasi yang berfungsi hanya
+untuk mengikuti contoh ini.
+
+### Memakai image GHCR tanpa build lokal
+
+Langkah berikut untuk Compose bawaan `compose.yaml`. Siapkan `.env` sesuai
+[panduan instalasi](SETUP_ID.md) terlebih dahulu. Buat berkas tambahan
+`compose.ghcr.yaml` di folder proyek dengan isi berikut:
+
+```yaml
+services:
+  xiaozhi:
+    image: ghcr.io/ojixzzz/xiaozhi-server-nodejs:latest
+  gateway:
+    image: ghcr.io/ojixzzz/xiaozhi-server-nodejs:latest
+```
+
+Kemudian jalankan di Terminal:
+
+```sh
+docker compose -f compose.yaml -f compose.ghcr.yaml --profile mqtt pull
+docker compose -f compose.yaml -f compose.ghcr.yaml --profile mqtt up -d --no-build
+docker compose -f compose.yaml -f compose.ghcr.yaml --profile mqtt ps
+```
+
+Hilangkan `--profile mqtt` jika hanya memakai percakapan WebSocket. Jika image
+bersifat privat, login GHCR dengan akun yang berhak sebelum `pull`. Jika ingin
+versi tertentu, ganti `latest` pada **kedua layanan** dengan tag `sha-…` yang sama
+yang sudah tersedia di registry. Untuk pembaruan, ulangi `pull` lalu `up -d --no-build`
+dengan berkas, profil, dan nama proyek yang sama.
+
+Image baru tersedia setelah workflow publishing berhasil. Perintah di atas
+adalah petunjuk pemakaian; tidak dijalankan saat merapikan dokumentasi ini.
+Referensi teknis berbahasa Inggris berikut menjelaskan jaringan, persistensi,
+migrasi, dan opsi tanpa Docker secara lengkap.
+
 For the full device-by-device workflow, use
 [the Indonesian setup guide](SETUP_ID.md). The repository has two Compose services:
 `xiaozhi` (relay/dashboard/memory/audio hosting) and the opt-in `gateway`
@@ -103,8 +157,8 @@ The two distinct operator-supplied MQTT keys must match across both services.
 
 For TLS MQTT, the device-facing port must be 8883 for stock firmware, and the
 certificate chain/hostname must be trusted by that firmware. TLS deployment,
-reverse-proxy configuration and certificate trust have not been verified on
-physical hardware here. TCP proxying that changes the device source IP while UDP
+reverse-proxy configuration and certificate trust were not verified on
+physical hardware in the recorded verification run. TCP proxying that changes the device source IP while UDP
 arrives directly is incompatible with this bridge's peer-address matching.
 The legacy firmware-compatible UDP AES-CTR format is not authenticated
 encryption; MQTT TLS does not secure that separate audio transport. Restrict the
@@ -139,12 +193,19 @@ The Compose named volume `xiaozhi-data`, mounted at `/app/data`, retains:
 - `memory.sqlite` and its adjacent SQLite `-wal`/`-shm` sidecars while active
 - `notifications.sqlite` and its SQLite sidecars: sender-submitted text, unread/
   read state and inbox records, separate from optional conversation memory
+- `remote-mcp-servers.json`: outgoing agent MCP URLs, settings and private Bearer
+  credentials configured through **MCP Devices → Add external MCP**; see
+  [two-way agent setup](remote-mcp.md)
+- `agent-connections.json`: dashboard-created pairings and private per-device
+  inbox tokens used by the copy-to-agent setup; delete connections in the
+  dashboard to revoke them
 
 The notification inbox defaults to 30-day retention and 100 records per device.
 Unread entries also expire; at capacity new messages are rejected rather than
 evicting unexpired entries. Configure sender access only with deliberate
-`NOTIFY_SENDERS_JSON` device allowlists and separate operator-supplied bearer
-tokens. An empty sender list disables external ingress.
+dashboard pairings or `NOTIFY_SENDERS_JSON` device allowlists and separate bearer
+tokens. Ingress is disabled when both the environment sender list and dashboard
+agent connection list are empty.
 It preserves text when a device is offline/busy; there is no offline audio replay
 queue. Unread messages request a fresh reminder chime every 60 seconds by default
 (`NOTIFY_REMINDER_INTERVAL_MS`; `0` disables it), pausing during voice sessions.
@@ -218,10 +279,11 @@ Tests use temporary data directories, synthetic test credentials, local sockets
 and fake provider responses. They exercise the relay HTTP/auth flow, SQLite
 persistence, gateway protocol/UDP audio bridge, notification forwarding, local
 signed audio and dashboard DOM behavior. They make no live paid Gemini request.
-See [TEST_RESULTS.md](../TEST_RESULTS.md) for exact checks and current totals.
+See [TEST_RESULTS.md](../TEST_RESULTS.md) for the historical checks and totals recorded on 7 October 2026;
+that run predates the latest reminder, title-announcement and MCP dashboard changes.
 
-Docker and Podman executables and a Docker socket were unavailable in the
-implementation workspace. Actual image build/run, container health and
+During the historical verification run, Docker and Podman executables and a
+Docker socket were unavailable in that implementation workspace. Actual image build/run, container health and
 mounted-volume persistence were therefore not run here. Static Compose/image
 checks and native local protocol tests do not substitute for those checks.
 
@@ -241,7 +303,8 @@ runs skip it. DOM simulation is not a visual/browser verification.
 5. Select MQTT, reboot/fetch OTA and verify a complete two-way conversation
 6. Let the device return idle, issue a fresh sample-chime link and send once;
    verify physical playback yourself. Check busy/offline behavior separately
-7. Configure a sender token and explicit approved-device allowlist. Submit a
+7. Create a scoped dashboard agent pairing, or configure a manual sender token
+   and explicit approved-device allowlist. Submit a
    harmless text notification through the documented HTTP/MCP endpoint, verify
    storage, restart the relay, then ask Gemini “notifnya apa?”. Check that list/get
    and beep do not mark it read. Say “halo” to announce titles, verify read status

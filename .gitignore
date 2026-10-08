@@ -24,6 +24,10 @@ public/xiaozhi/*
 # Dynamic Data
 devices.json
 mcp_devices.json
+remote-mcp-servers.json
+remote-mcp-servers.json.*.tmp
+agent-connections.json
+agent-connections.json.*.tmp
 
 # Private persistent feature data
 data/

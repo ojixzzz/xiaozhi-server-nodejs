@@ -1,5 +1,14 @@
 # Device memory: SQLite, consent, bounds and privacy
 
+[Beranda](../README.md) · [Panduan pengguna](panduan-pengguna.md#memori-percakapan-opsional) · [Semua dokumentasi](README.md)
+
+**Ringkasan Bahasa Indonesia:** memori percakapan awalnya nonaktif. Untuk
+mengaktifkannya, buka **Memory & Notify**, centang **Enable shared memory for this
+device**, lalu **Save memory**. Fitur ini menyimpan giliran Gemini yang selesai
+dan catatan yang Anda masukkan. Semua pengguna perangkat berbagi memori yang sama.
+Mematikan dan menyimpan memori menghapus data memori, bukan inbox. Bagian Inggris
+berikut adalah referensi batas, privasi, dan API untuk administrator/pengembang.
+
 Memory is **off by default for every device**. An authenticated administrator can
 turn it on in the **Memory & Notify** dashboard for an approved device. The
 administrator password must be unique and at least 12 characters. This feature

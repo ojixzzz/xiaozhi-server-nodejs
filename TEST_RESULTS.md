@@ -1,4 +1,17 @@
-# Local verification report
+# Historical local verification report — 7 October 2026
+
+[Beranda Indonesia](README.md) · [English overview](README.en.md) · [Dokumentasi](docs/README.md)
+
+**Cakupan laporan:** hasil di bawah berasal dari pemeriksaan pada 7 Oktober 2026.
+Ini bukan laporan tes ulang source saat ini. Pengingat tiap menit, pengumuman
+judul/read otomatis, koneksi MCP keluar, dan konfigurasi agent siap salin di
+dashboard ditambahkan setelah pemeriksaan tersebut; tes lokal/build untuk
+perubahan terbaru itu belum dijalankan pada iterasi ini. Jangan memakai jumlah
+tes lama sebagai bukti bahwa seluruh fitur terbaru telah lolos.
+
+The results below are historical. They predate the latest reminder, title/read,
+remote MCP, and copy-to-agent dashboard changes; those changes have not been
+locally tested in this iteration.
 
 Date: 2026-10-07. Runtime: Node 24.19.0, built-in SQLite 3.53.3.
 Original relay base: `31ff6cff2e11d34e44332394bea99b3c915234c1`.

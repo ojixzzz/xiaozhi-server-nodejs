@@ -12,6 +12,12 @@
         .form-group { margin-bottom: 15px; }
         .form-group label { display: block; margin-bottom: 5px; font-weight: bold; }
         input[type="password"], input[type="text"], textarea { width: 100%; padding: 10px; border: 1px solid #ccc; border-radius: 4px; box-sizing: border-box; }
+        #remoteMcpForm input[type="url"], #remoteMcpForm select { width: 100%; padding: 10px; border: 1px solid #ccc; border-radius: 4px; box-sizing: border-box; background: white; }
+        .agent-setup { padding: 18px; border: 1px solid #aac9e8; border-radius: 8px; background: #f8fbff; margin-bottom: 24px; }
+        .agent-setup select, .agent-setup input[type="url"] { width: 100%; padding: 10px; border: 1px solid #ccc; border-radius: 4px; box-sizing: border-box; background: white; }
+        #agentSetupText { height: 220px; font-family: monospace; font-size: 12px; }
+        #agentConnectionList { list-style: none; padding: 0; }
+        #agentConnectionList li { border-top: 1px solid #ddd; padding: 12px 0; overflow-wrap: anywhere; }
         textarea { resize: vertical; height: 100px; }
         button { background: #0066cc; color: white; border: none; padding: 8px 12px; border-radius: 4px; cursor: pointer; font-size: 14px; }
         button:hover { background: #005bb5; }
@@ -113,6 +119,44 @@
 
     <!-- MCP Devices Section -->
     <div id="section-mcp" class="hidden">
+        <section class="agent-setup">
+            <h3>Hubungkan agent · MCP dua arah</h3>
+            <p class="help-text">Pilih perangkat Gemini, buat konfigurasi, lalu salin ke Hermes atau agent custom. Token inbox dibuat otomatis. Agent mendaftarkan server MCP-nya lewat konfigurasi ini; tools langsung aktif di perangkat pilihan.</p>
+            <form onsubmit="event.preventDefault(); createAgentConnection()">
+                <div class="form-group"><label for="agentSetupDevice">Perangkat XiaoZhi</label><select id="agentSetupDevice" required><option value="">Pilih perangkat</option></select></div>
+                <div class="form-group"><label for="agentSetupName">Nama agent</label><input id="agentSetupName" type="text" maxlength="80" value="My agent" required></div>
+                <details><summary>Alamat dashboard yang bisa diakses agent</summary><div class="form-group" style="margin-top:12px;"><label for="agentSetupPublicUrl">URL publik dashboard</label><input id="agentSetupPublicUrl" type="url" required><p class="help-text">Terisi dari alamat dashboard ini. Ubah jika agent memakai alamat domain/IP yang berbeda.</p></div></details>
+                <button id="agentSetupCreate" type="submit" style="margin-top:14px;">Buat konfigurasi</button>
+            </form>
+            <p id="agentSetupStatus" class="help-text" role="status"></p>
+            <div id="agentSetupOutput" class="hidden">
+                <label for="agentSetupText">Tempel teks ini ke agent eksternal</label>
+                <textarea id="agentSetupText" readonly spellcheck="false"></textarea>
+                <div class="memory-actions">
+                    <button type="button" onclick="copyAgentSetup(false)">Salin untuk agent</button>
+                    <button type="button" onclick="copyAgentSetup(true)">Salin JSON MCP saja</button>
+                    <button type="button" onclick="clearAgentSetup()" style="background:#6c757d;">Tutup</button>
+                </div>
+                <p class="help-text">Teks ini berisi token khusus perangkat ini. Notifikasi inbox bisa langsung dikirim. Untuk tools dua arah, agent harus menyediakan server MCP; status di bawah berubah menjadi Terhubung dua arah setelah server tersambung dan tools aktif.</p>
+            </div>
+            <ul id="agentConnectionList"></ul>
+        </section>
+        <details><summary>Konfigurasi MCP manual / lanjutan</summary><div style="margin-top:16px;">
+        <h3>External MCP connections</h3>
+        <p class="help-text">Connect an external agent's MCP server so Gemini can use its tools. After saving, enable the connection under Configure Xiaozhi Device. Incoming agent notifications use the separate notification sender setup.</p>
+        <button type="button" onclick="openRemoteMcpForm()">Add external MCP</button>
+        <div id="remoteMcpForm" class="hidden" style="margin-top:16px; padding:16px; border:1px solid #ddd; border-radius:8px;">
+            <h4 id="remoteMcpFormTitle">Add external MCP</h4>
+            <div class="form-group"><label for="remoteMcpName">Name</label><input id="remoteMcpName" type="text" maxlength="80" placeholder="My agent"></div>
+            <div class="form-group"><label for="remoteMcpUrl">Server URL</label><input id="remoteMcpUrl" type="url" placeholder="https://agent.example.com/mcp"></div>
+            <div class="form-group"><label for="remoteMcpTransport">Transport</label><select id="remoteMcpTransport"><option value="streamable-http">Streamable HTTP</option><option value="sse">SSE</option></select></div>
+            <div class="form-group"><label for="remoteMcpToken">Bearer token (optional)</label><input id="remoteMcpToken" type="password" autocomplete="new-password"><p id="remoteMcpTokenHelp" class="help-text">Use a token issued by your external agent.</p></div>
+            <div class="checkbox-group"><input id="remoteMcpClearToken" type="checkbox"><label for="remoteMcpClearToken">Remove saved token</label></div>
+            <div class="checkbox-group"><input id="remoteMcpEnabled" type="checkbox" checked><label for="remoteMcpEnabled">Enable connection</label></div>
+            <button id="remoteMcpSaveButton" type="button" onclick="saveRemoteMcp()">Save &amp; connect</button>
+            <button type="button" onclick="closeRemoteMcpForm()" style="background:#6c757d;">Cancel</button>
+        </div>
+        <p id="remoteMcpStatus" class="help-text" role="status"></p>
         <h3>MCP Client Devices</h3>
         <p style="font-size:14px; color:#555;">These are external scripts or ESP32 devices that connect to the MCP endpoint to expose tool calls to Gemini.</p>
         <table>
@@ -126,6 +170,7 @@
             </thead>
             <tbody id="mcpTableBody"></tbody>
         </table>
+        </div></details>
     </div>
 </div>
 
@@ -338,6 +383,12 @@
     let currentDevices = {};
     let currentMcpDevices = {};
     let editingMac = null;
+    let editingRemoteMcpId = null;
+    let remoteMcpBusy = false;
+    let currentAgentConnections = [];
+    let agentSetupExport = null;
+    let agentSetupBusy = false;
+    let agentSetupGeneration = 0;
     let providerConfigData = null;
 
     async function checkAuth() {
@@ -347,6 +398,7 @@
             document.getElementById('dashboardView').classList.remove('hidden');
             loadData();
         } else {
+            clearAgentSetup();
             closeMemoryNotifyModal();
             notificationAttempts.clear();
             inboxMessageAttempts.clear();
@@ -377,6 +429,8 @@
     }
 
     async function logout() {
+        clearAgentSetup();
+        closeRemoteMcpForm();
         closeMemoryNotifyModal();
         notificationAttempts.clear();
         inboxMessageAttempts.clear();
@@ -421,9 +475,135 @@
         
         const resMcp = await fetch('/api/mcp_devices');
         if (resMcp.ok) currentMcpDevices = await resMcp.json();
+
+        const resAgents = await fetch('/api/agent_connections');
+        if (resAgents.status === 401) {
+            clearAgentSetup();
+            currentAgentConnections = [];
+            checkAuth();
+            return;
+        }
+        if (resAgents.ok) {
+            const connections = await resAgents.json();
+            if (Array.isArray(connections)) currentAgentConnections = connections;
+        } else {
+            document.getElementById('agentSetupStatus').textContent = 'Konfigurasi agent tidak tersedia. Periksa pengaturan admin atau file konfigurasi tersimpan.';
+        }
         
         renderXiaozhiTable();
         renderMcpTable();
+        renderAgentConnections();
+    }
+
+    function renderAgentConnections() {
+        const select = document.getElementById('agentSetupDevice');
+        const previous = select.value;
+        select.replaceChildren();
+        const placeholder = document.createElement('option');
+        placeholder.value = ''; placeholder.textContent = 'Pilih perangkat';
+        select.appendChild(placeholder);
+        for (const [id, device] of Object.entries(currentDevices)) {
+            if (device.status !== 'approved' || (device.llm_backend || providerConfigData?.default_backend || 'gemini') !== 'gemini') continue;
+            const option = document.createElement('option');
+            option.value = id; option.textContent = device.name ? `${device.name} (${id})` : id;
+            select.appendChild(option);
+        }
+        if ([...select.options].some(option => option.value === previous)) select.value = previous;
+        if (!select.value && select.options.length === 2) select.selectedIndex = 1;
+        const url = document.getElementById('agentSetupPublicUrl');
+        if (!url.value) url.value = window.location.href.split(/[?#]/)[0].replace(/\/index\.html$/, '').replace(/\/+$/, '');
+        const list = document.getElementById('agentConnectionList');
+        list.replaceChildren();
+        for (const connection of currentAgentConnections) {
+            const item = document.createElement('li');
+            const heading = document.createElement('strong');
+            heading.textContent = `${connection.name} · ${connection.device_id}`;
+            item.appendChild(heading);
+            const status = document.createElement('p');
+            status.className = 'help-text';
+            status.textContent = connection.connected && connection.tools_enabled && connection.tools_count ? `Terhubung dua arah · ${connection.tools_count} tools` : connection.connected && !connection.tools_count ? 'Server agent terhubung · belum menyediakan tools' : connection.connected ? 'Server agent terhubung · aktifkan tools di konfigurasi perangkat' : connection.status === 'waiting' ? 'Inbox siap · menunggu agent mendaftarkan server MCP' : 'Inbox siap · server agent belum terhubung';
+            if (connection.error) status.textContent += ` · ${connection.error}`;
+            item.appendChild(status);
+            const copy = document.createElement('button');
+            copy.textContent = 'Konfigurasi untuk agent';
+            copy.onclick = () => exportAgentSetup(connection.id, copy);
+            item.appendChild(copy);
+            const remove = document.createElement('button');
+            remove.textContent = 'Hapus koneksi'; remove.className = 'btn-delete'; remove.style.marginLeft = '8px';
+            remove.onclick = () => removeAgentConnection(connection, remove);
+            item.appendChild(remove);
+            list.appendChild(item);
+        }
+    }
+    function clearAgentSetup() {
+        agentSetupGeneration++;
+        agentSetupExport = null;
+        document.getElementById('agentSetupText').value = '';
+        document.getElementById('agentSetupOutput').classList.add('hidden');
+    }
+    function showAgentSetup(data) {
+        agentSetupExport = data;
+        document.getElementById('agentSetupText').value = data.instructions;
+        document.getElementById('agentSetupOutput').classList.remove('hidden');
+    }
+    async function createAgentConnection() {
+        if (agentSetupBusy) return;
+        clearAgentSetup();
+        const generation = agentSetupGeneration;
+        const button = document.getElementById('agentSetupCreate');
+        const status = document.getElementById('agentSetupStatus');
+        agentSetupBusy = true; button.disabled = true;
+        status.textContent = 'Membuat konfigurasi…';
+        try {
+            const data = await remoteMcpRequest('/api/agent_connections', 'POST', {
+                name: document.getElementById('agentSetupName').value.trim(),
+                device_id: document.getElementById('agentSetupDevice').value,
+                public_url: document.getElementById('agentSetupPublicUrl').value.trim()
+            });
+            if (generation !== agentSetupGeneration) return;
+            showAgentSetup(data);
+            status.textContent = 'Siap. Klik “Salin untuk agent”, lalu tempel ke agent eksternal.';
+            await loadData();
+        } catch (error) { if (generation === agentSetupGeneration) status.textContent = error.message; }
+        finally { agentSetupBusy = false; button.disabled = false; }
+    }
+    async function exportAgentSetup(id, button) {
+        if (button.disabled) return;
+        clearAgentSetup();
+        const generation = agentSetupGeneration;
+        button.disabled = true;
+        try {
+            const data = await remoteMcpRequest(`/api/agent_connections/${encodeURIComponent(id)}/export`, 'POST', {});
+            if (generation !== agentSetupGeneration) return;
+            showAgentSetup(data);
+            document.getElementById('agentSetupStatus').textContent = 'Konfigurasi siap disalin.';
+        } catch (error) { if (generation === agentSetupGeneration) document.getElementById('agentSetupStatus').textContent = error.message; }
+        finally { button.disabled = false; }
+    }
+    async function copyAgentSetup(jsonOnly) {
+        if (!agentSetupExport) return;
+        const value = jsonOnly ? JSON.stringify(agentSetupExport.mcp_config, null, 2) : agentSetupExport.instructions;
+        const generation = agentSetupGeneration;
+        try {
+            await navigator.clipboard.writeText(value);
+            if (generation === agentSetupGeneration) document.getElementById('agentSetupStatus').textContent = 'Tersalin. Tempel ke agent eksternal.';
+        } catch (_) {
+            if (generation !== agentSetupGeneration) return;
+            const textarea = document.getElementById('agentSetupText');
+            textarea.value = value; textarea.focus(); textarea.select();
+            document.getElementById('agentSetupStatus').textContent = 'Teks sudah dipilih. Tekan Ctrl+C / Cmd+C untuk menyalin.';
+        }
+    }
+    async function removeAgentConnection(connection, button) {
+        if (button.disabled || !confirm(`Hapus koneksi ${connection.name}? Token inbox akan dicabut dan tools agent dilepas dari perangkat.`)) return;
+        button.disabled = true;
+        try {
+            await remoteMcpRequest(`/api/agent_connections/${encodeURIComponent(connection.id)}`, 'DELETE', {});
+            clearAgentSetup();
+            document.getElementById('agentSetupStatus').textContent = 'Koneksi dihapus.';
+            await loadData();
+        } catch (error) { document.getElementById('agentSetupStatus').textContent = error.message; }
+        finally { button.disabled = false; }
     }
 
     function renderXiaozhiTable() {
@@ -485,24 +665,48 @@
             const tr = document.createElement('tr');
             
             const tdId = document.createElement('td');
-            tdId.textContent = id;
+            tdId.textContent = data.remote ? data.name : id;
+            if (data.remote) {
+                const url = document.createElement('p');
+                url.className = 'help-text';
+                url.textContent = data.url;
+                tdId.appendChild(url);
+            }
             
             const tdStatus = document.createElement('td');
             tdStatus.textContent = (data.status || 'unknown').toUpperCase();
             tdStatus.className = data.status === 'approved' ? 'status-approved' : 'status-pending';
             
             const tdConn = document.createElement('td');
-            tdConn.textContent = data.connected ? '🟢 Online' : '🔴 Offline';
+            tdConn.textContent = data.connecting ? 'Connecting…' : data.connected ? '🟢 Online' : '🔴 Offline';
+            if (data.error) {
+                const detail = document.createElement('p');
+                detail.className = 'help-text';
+                detail.textContent = data.error;
+                tdConn.appendChild(detail);
+            }
             
             const tdActions = document.createElement('td');
             tdActions.className = 'actions';
             
-            if (data.status !== 'approved') {
+            if (!data.remote && data.status !== 'approved') {
                 const btnApprove = document.createElement('button');
                 btnApprove.textContent = 'Approve';
                 btnApprove.className = 'btn-approve';
                 btnApprove.onclick = () => approveMcp(id);
                 tdActions.appendChild(btnApprove);
+            }
+            if (data.remote) {
+                const edit = document.createElement('button');
+                edit.textContent = 'Edit connection';
+                edit.className = 'btn-config';
+                edit.onclick = () => openRemoteMcpForm(id);
+                tdActions.appendChild(edit);
+                const connect = document.createElement('button');
+                connect.textContent = data.connected ? 'Refresh tools' : 'Reconnect';
+                connect.disabled = data.connecting || !data.enabled;
+                connect.onclick = () => connectRemoteMcp(id, connect);
+                tdActions.appendChild(connect);
             }
             
             if (data.tools && data.tools.length > 0) {
@@ -546,8 +750,80 @@
 
     async function deleteMcp(id) {
         if (!confirm(`Delete MCP device ${id}?`)) return;
+        if (currentMcpDevices[id]?.remote) {
+            try {
+                await remoteMcpRequest(`/api/remote_mcp_servers/${encodeURIComponent(id)}`, 'DELETE', {});
+                document.getElementById('remoteMcpStatus').textContent = 'Connection removed. Reopen the voice conversation to update tools.';
+                if (editingRemoteMcpId === id) closeRemoteMcpForm();
+                await loadData();
+            } catch (error) { document.getElementById('remoteMcpStatus').textContent = error.message; }
+            return;
+        }
         await fetch(`/api/mcp_devices/${encodeURIComponent(id)}`, { method: 'DELETE' });
         loadData();
+    }
+
+    function openRemoteMcpForm(id) {
+        if (remoteMcpBusy) return;
+        editingRemoteMcpId = id || null;
+        const server = id ? currentMcpDevices[id] : null;
+        document.getElementById('remoteMcpFormTitle').textContent = server ? 'Edit external MCP' : 'Add external MCP';
+        document.getElementById('remoteMcpName').value = server?.name || '';
+        document.getElementById('remoteMcpUrl').value = server?.url || '';
+        document.getElementById('remoteMcpTransport').value = server?.transport || 'streamable-http';
+        document.getElementById('remoteMcpToken').value = '';
+        document.getElementById('remoteMcpTokenHelp').textContent = server?.tokenConfigured ? 'A token is saved. Leave blank to keep it, or enter a replacement.' : 'Use a token issued by your external agent.';
+        document.getElementById('remoteMcpClearToken').checked = false;
+        document.getElementById('remoteMcpEnabled').checked = server?.enabled !== false;
+        document.getElementById('remoteMcpForm').classList.remove('hidden');
+    }
+    function closeRemoteMcpForm() {
+        document.getElementById('remoteMcpToken').value = '';
+        document.getElementById('remoteMcpClearToken').checked = false;
+        document.getElementById('remoteMcpForm').classList.add('hidden');
+        editingRemoteMcpId = null;
+    }
+    async function remoteMcpRequest(url, method, body) {
+        const response = await fetch(url, { method, headers: { 'Content-Type':'application/json', 'X-Requested-With':'XiaozhiDashboard' }, body:JSON.stringify(body) });
+        let data;
+        try { data = await response.json(); } catch { throw new Error('No confirmed response. Refresh the connection list before trying again.'); }
+        if (!response.ok) throw new Error(serverMessage(data, `Remote MCP request failed (HTTP ${response.status}).`));
+        return data;
+    }
+    async function saveRemoteMcp() {
+        if (remoteMcpBusy) return;
+        const button = document.getElementById('remoteMcpSaveButton');
+        const status = document.getElementById('remoteMcpStatus');
+        const body = {
+            name:document.getElementById('remoteMcpName').value.trim(),
+            url:document.getElementById('remoteMcpUrl').value.trim(),
+            transport:document.getElementById('remoteMcpTransport').value,
+            token:document.getElementById('remoteMcpClearToken').checked ? null : document.getElementById('remoteMcpToken').value,
+            enabled:document.getElementById('remoteMcpEnabled').checked
+        };
+        if (editingRemoteMcpId) body.id = editingRemoteMcpId;
+        remoteMcpBusy = true;
+        button.disabled = true;
+        status.textContent = 'Saving and discovering tools…';
+        try {
+            const result = await remoteMcpRequest('/api/remote_mcp_servers', 'POST', body);
+            status.textContent = result.server.connected ? 'Connected. Enable this connection in Configure Xiaozhi Device, then reopen the conversation.' : result.server.enabled ? `Saved. ${result.server.error || 'Waiting for the external server.'}` : 'Saved with connection disabled.';
+            closeRemoteMcpForm();
+            await loadData();
+        } catch (error) { status.textContent = error.message; }
+        finally { remoteMcpBusy = false; button.disabled = false; }
+    }
+    async function connectRemoteMcp(id, button) {
+        if (button.disabled) return;
+        button.disabled = true;
+        const status = document.getElementById('remoteMcpStatus');
+        status.textContent = 'Connecting and discovering tools…';
+        try {
+            const result = await remoteMcpRequest(`/api/remote_mcp_servers/${encodeURIComponent(id)}/connect`, 'POST', {});
+            status.textContent = result.server.connected ? 'Connected. Reopen the voice conversation to use the updated tools.' : result.server.error || 'Connection is disabled.';
+            await loadData();
+        } catch (error) { status.textContent = error.message; }
+        finally { button.disabled = false; }
     }
 
     function handleBackendChange() {
@@ -694,7 +970,7 @@
                 
                 const lbl = document.createElement('label');
                 lbl.htmlFor = `mcp_chk_${mcpId}`;
-                lbl.textContent = mcpId;
+                lbl.textContent = mcpData.name || mcpId;
                 lbl.style.margin = '0';
                 
                 div.appendChild(chk);

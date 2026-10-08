@@ -1,5 +1,14 @@
 # MQTT gateway and audio notifications
 
+[Beranda](../README.md) · [Panduan pengguna](panduan-pengguna.md) · [Instalasi](SETUP_ID.md)
+
+**Ringkasan Bahasa Indonesia:** halaman ini membahas jalur MQTT dan audio yang
+membuat perangkat idle berbunyi. Penyimpanan inbox tetap bisa berhasil meskipun
+beep gagal. Untuk mencoba pesan lengkap, gunakan **Save message & beep**;
+**Send notification** pada bagian audio hanya mengirim rekaman tanpa pesan inbox.
+`published` bukan bukti suara sudah terdengar. Referensi Inggris berikut untuk
+administrator/pengembang; pemakaian dashboard ada di panduan pengguna.
+
 For the primary **text notification inbox → beep → ask Gemini later** workflow,
 see [inbox behavior](inbox.md) and [Hermes/HTTP/MCP sender setup](hermes-mcp.md).
 This page documents the gateway and best-effort audio leg of that workflow, plus
