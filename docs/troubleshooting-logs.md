@@ -72,7 +72,9 @@ Baris baru mempunyai penanda `trace` dan data JSON. Contoh ilustrasi:
 | `session.configured` | Backend, timeout efektif, asal timeout perangkat/server, dan ambang deteksi suara |
 | `mcp.discovery_started` / `mcp.discovery_finished` | Lama penemuan tools dan hasil `completed`, `timeout`, `error`, `cancelled`, atau `backend_skipped` |
 | `mcp.rpc_request` / `mcp.rpc_response` / `mcp.rpc_timeout` | Cocokkan `rpc_id` untuk melihat request mana yang lambat/gagal; timeout tool lama berarti belum ada konfirmasi, bukan bukti tool berhasil |
+| `mcp.tools_available` / `mcp.endpoint_disconnected` | Discovery dan perubahan sambungan agent; `tools_apply_next_session` mempertahankan percakapan aktif dan memuat tools baru pada sesi berikutnya |
 | `provider.connect_requested` | Model, suara, nama/jumlah tools, dan status transkripsi yang dipakai; isi prompt tidak dicatat |
+| `gemini.tool_schema_prepared` | Nama dan indeks tools serta format schema yang dikirim; indeks mulai dari `0` dan cocok dengan `function_declarations[n]` pada error Gemini |
 | `gemini.socket_open` | Jalur jaringan ke Gemini terbuka; sesi belum tentu diterima |
 | `gemini.setup_accepted` / `provider.ready` | Gemini menerima konfigurasi dan perangkat dapat mulai mengirim audio |
 | `gemini.setup_timeout` | Setup belum selesai setelah 20 detik; ini terpisah dari timeout diam perangkat |
@@ -84,6 +86,7 @@ Baris baru mempunyai penanda `trace` dan data JSON. Contoh ilustrasi:
 | `idle.hold` / `idle.release` / `idle.hold_expired` | Timer menunggu AI/audio/tool, melanjutkan hitungan, atau melepas penantian yang macet |
 | `session.status` | Ringkasan setiap 15 detik: keadaan timer, provider, antrean, dan jumlah paket audio |
 | `idle.timeout` / `session.standby` | Waktu diam tercapai dan alasan perangkat diarahkan ke standby |
+| `session.close_requested` | Penutupan yang diminta pengaturan/revokasi, dengan alasan spesifik, sumber, dan konteks request dashboard |
 | `session.teardown` / `device.disconnected` | Cleanup dan kode penutupan perangkat; perubahan pengaturan/shutdown server punya alasan sendiri |
 
 Pada `session.status`, lihat `timeout_ms`, `idle_ms`, `remaining_ms`, `paused`,
@@ -105,6 +108,38 @@ suara dibatasi satu log per 10 detik agar tidak menumpuk setiap paket.
 4. Jika `device.disconnected` muncul tanpa `session.standby`, periksa kode
    penutupan perangkat, jaringan/gateway, atau perubahan pengaturan. Untuk MQTT,
    sertakan juga `docker compose logs --since=10m gateway`.
+
+Jika ada `session.close_requested`, lihat `source`, `operation`, `request_id`,
+`method`, dan `route`. Misalnya `voice_idle_setting_changed` menyertakan waktu
+lama/baru; `memory_cleared` berarti hapus memori; `transport_changed` berarti
+simpan transport; `agent_connection_revoked` berarti akses agent dicabut.
+`source=dashboard_api` menunjukkan request dashboard yang menyebabkan penutupan.
+Perubahan koneksi agent otomatis memakai `source=mcp_lifecycle` dan mempertahankan
+percakapan, kecuali pencabutan akses yang memang harus mengakhiri sesi. Pada versi
+sebelumnya semua jalur ini memakai alasan umum `device_settings_changed`, sehingga
+log lama saja tidak dapat membedakan pemicunya.
+
+## Gemini menolak schema tool MCP
+
+Jika log menunjukkan `code=1007`, `setup_accepted=false`, dan pesan seperti
+`Unknown name "uniqueItems"` pada `function_declarations[7].parameters`,
+Gemini menolak konfigurasi tool sebelum percakapan dimulai. Ini terpisah dari
+timeout diam. Indeks `[7]` berarti tool kedelapan; cocokkan dengan urutan
+`tool_names` di `provider.connect_requested`, atau `index` di
+`gemini.tool_schema_prepared` pada versi terbaru.
+
+Contoh dari tool Hermes: `hermes_reminder_create` menggunakan `uniqueItems`
+untuk daftar yang tidak boleh berisi nilai berulang. Server kini mengirim schema
+tool lewat `parametersJsonSchema`, sesuai
+[adapter MCP SDK Google](https://github.com/googleapis/js-genai/blob/v1.45.0/src/_transformers.ts#L685-L707).
+Schema asli tetap dipertahankan. Perubahan berlaku untuk tools agent, MCP
+perangkat, dan tools bawaan sebelum dikirim ke Gemini.
+
+Jika masih memakai image lama, perbarui image dan buat ulang container melalui
+cara deployment biasa Anda, lalu buka percakapan baru. Cari
+`gemini.tool_schema_prepared` dengan `schema_format=parametersJsonSchema`,
+kemudian `gemini.setup_accepted` dan `provider.ready`. Format schema yang benar
+belum menjamin setup berhasil jika ada penolakan lain; baca `reason` terbaru.
 
 ## Detail tambahan
 
@@ -129,6 +164,11 @@ Filter relay logs by `session_id`; include the whole session from connection to
 disconnect. `seq` orders events, `elapsed_ms` measures time since the device
 connection, and `attempt` distinguishes AI reconnects. `gemini.socket_open` is
 transport readiness; `provider.ready` means session setup was accepted.
+An `Unknown name "uniqueItems"` setup rejection means a tool's JSON Schema was
+sent through Gemini's restricted `parameters` field. The server now uses
+`parametersJsonSchema`, preserving the original tool constraints. Update the
+deployed image and start a new conversation; `gemini.tool_schema_prepared`
+lists tool names, zero-based indexes, and schema formats without schema contents.
 `provider.closed` includes close code/reason and pending work. `session.status`
 reports idle state and audio counters every 15 seconds. Lifecycle tracing is
 enabled at `LOG_LEVEL=info`; `debug` adds control events and transcript character

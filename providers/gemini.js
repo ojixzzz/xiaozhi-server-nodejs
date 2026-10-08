@@ -33,8 +33,26 @@ class GeminiProvider extends LLMProvider {
         };
 
         if (tools && tools.length > 0) {
-            sessionConfig.tools = [{ functionDeclarations: tools }];
+            // MCP supplies JSON Schema, while Gemini's `parameters` uses a
+            // restricted Schema message (e.g. it rejects `uniqueItems`). Use
+            // the JSON Schema field, as the SDK's MCP adapter does, and keep
+            // SDK transformations isolated from the original tool definitions.
+            const functionDeclarations = tools.map(tool => {
+                const declaration = { ...tool };
+                const schema = tool.parametersJsonSchema ?? tool.parameters;
+                delete declaration.parameters;
+                if (schema != null) declaration.parametersJsonSchema = JSON.parse(JSON.stringify(schema));
+                return declaration;
+            });
+            sessionConfig.tools = [{ functionDeclarations }];
             sessionConfig.toolConfig = { functionCallingConfig: { mode: "AUTO" } };
+            this.emit('diagnostic', {
+                event: 'gemini.tool_schema_prepared',
+                tool_count: functionDeclarations.length,
+                tools: functionDeclarations.map((tool, index) => ({
+                    index, name: tool.name, schema_format: tool.parametersJsonSchema != null ? 'parametersJsonSchema' : 'none'
+                }))
+            });
         }
 
         if (this.config.input_transcription) sessionConfig.inputAudioTranscription = {};

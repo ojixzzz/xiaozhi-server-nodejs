@@ -361,6 +361,51 @@ test('successful device MCP discovery cancels its timeout warning and listen doe
   device.goodbye();
 });
 
+test('MCP discovery, disconnect and reconnect preserve voice; explicit revocation still closes it', { timeout: 30000 }, async t => {
+  const f = await fixture(t);
+  assert.equal((await f.request(`/api/devices/${MAC}/config`, { method: 'POST', body: JSON.stringify({ voice_idle_timeout_seconds: 0 }) })).status, 200);
+  const config = await f.selectMqtt(MAC, UUID);
+  const device = await f.connect(config);
+  const voice = await f.openScript(device, []);
+  const pairing = (await f.request('/api/agent_connections', { method: 'POST', body: JSON.stringify({
+    name: 'Reconnect while listening', device_id: MAC, public_url: f.base
+  }) })).body;
+  const tool = { name: 'agent_echo', inputSchema: { type: 'object', properties: {} } };
+  let agent = await endpointProvider(pairing.mcp_endpoint, [tool], () => ({ content: [{ type: 'text', text: 'ok' }] }));
+  const peers = [agent]; t.after(() => peers.forEach(peer => peer.ws.terminate()));
+  const status = async () => (await f.request('/api/agent_connections')).body.find(row => row.id === pairing.connection.id);
+  await until(async () => (await status()).tools_enabled, 'automatic tool selection during active voice');
+  const firstAlias = (await f.request('/api/mcp_devices')).body[pairing.connection.id].tools[0].exposedName;
+  assert.equal(voice.connected.tools.some(item => item.name === firstAlias), false, 'active AI keeps its original tool snapshot');
+  agent.ws.close(1000, 'Agent restarting');
+  await until(async () => !(await status()).connected, 'agent disconnected');
+  agent = await endpointProvider(pairing.mcp_endpoint, [tool], () => ({ content: [{ type: 'text', text: 'ok' }] }));
+  peers.push(agent);
+  await until(async () => (await status()).tools_enabled, 'agent reconnected');
+  assert.equal(device.history.some(item => item.payload.type === 'goodbye'), false, 'background MCP activity never returns voice to standby');
+  assert.equal((await f.readEvents()).filter(event => event.type === 'connect').length, 1);
+  assert.equal((await f.readEvents()).some(event => event.type === 'close' && event.session === voice.connected.session), false);
+  const audioBefore = (await f.readEvents()).filter(event => event.type === 'input_audio').length;
+  await device.sendAudio(audioFrame());
+  await until(async () => (await f.readEvents()).filter(event => event.type === 'input_audio').length > audioBefore, 'voice still delivers microphone audio');
+  assert.match(f.output, /mcp.tools_available/); assert.match(f.output, /mcp.endpoint_disconnected/);
+  assert.match(f.output, /tools_apply_next_session/);
+  const input = { title: 'Reconnect result', text: 'Still works both ways', idempotency_key: 'reconnected-agent-inbox' };
+  assert.equal((await agent.request('after-reconnect', 'xiaozhi/notify', input)).result.structuredContent.stored, true);
+  assert.equal(f.rows().length, 1, 'inbox remains available after reconnect');
+
+  // A new user conversation loads the newly discovered aliases.
+  await f.closeScript(device, voice.connected.session);
+  const fresh = await f.openScript(device, []);
+  const alias = (await f.request('/api/mcp_devices')).body[pairing.connection.id].tools[0].exposedName;
+  assert.ok(fresh.connected.tools.some(item => item.name === alias));
+  assert.equal((await f.request(`/api/agent_connections/${pairing.connection.id}`, { method: 'DELETE', body: '{}' })).status, 200);
+  await until(async () => (await f.readEvents()).some(event => event.type === 'close' && event.session === fresh.connected.session), 'explicit revocation invalidates voice');
+  await device.waitForMessage(message => message.type === 'goodbye');
+  assert.match(f.output, /session.close_requested/); assert.match(f.output, /agent_connection_revoked/);
+  assert.match(f.output, /agent_connection_delete/);
+});
+
 test('calculator-style endpoint connects voice tools and delayed durable inbox without a public agent HTTP server', { timeout: 30000 }, async t => {
   const f = await fixture(t);
   const setup = await f.request('/api/agent_connections', { method: 'POST', body: JSON.stringify({

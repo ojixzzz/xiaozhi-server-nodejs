@@ -85,9 +85,12 @@ HTTP/SSE lokal memerlukan adaptor, atau gunakan pengaturan HTTP lanjutan di bawa
 
 Setelah tools ditemukan, relay otomatis memilih koneksi untuk perangkat pasangan.
 Tunggu **Terhubung dua arah · … tools**, lalu buka ulang percakapan XiaoZhi.
-Saat koneksi/tools berubah, percakapan yang memakai koneksi ditutup agar tidak
-memakai definisi lama. Jika Anda mengubah tools saat agent berjalan, restart pipe
-untuk menemukan daftar tools baru.
+Discovery, putus koneksi, dan sambung ulang pipe tidak menutup percakapan aktif.
+Tools baru dimuat pada percakapan berikutnya. Tool dari koneksi lama yang sudah
+putus tidak diteruskan ke koneksi baru; buka ulang percakapan untuk memakai tools
+yang sudah tersambung kembali. Jika Anda mengubah tools saat agent berjalan,
+restart pipe untuk menemukan daftar tools baru. Menghapus/mencabut koneksi atau
+mengubah pengaturan HTTP lanjutan melalui dashboard tetap menutup sesi terkait.
 
 ## 3. Agent mengirim inbox memakai endpoint yang sama
 

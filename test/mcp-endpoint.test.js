@@ -121,18 +121,23 @@ test('agent inbox requests use paired identity and receipts for both extension m
   assert.equal(ws.sent.find(message => message.id === null).error.code, -32600);
 });
 
-test('disconnect and revocation invalidate captured tools and close voice sessions', async t => {
+test('disconnect and revocation invalidate captured tools with distinct lifecycle causes', async t => {
   const f = fixture(t);
   const ws = await f.connect();
   const route = [...f.endpoint.routes(new Set([f.sender.name]), 'alpha').values()][0];
   ws.close();
   await assert.rejects(f.endpoint.call(route, {}, caller), /no longer available/);
-  assert.deepEqual(f.changes, [['alpha', f.sender.name]]);
+  assert.equal(f.changes.length, 1);
+  assert.deepEqual(f.changes[0].slice(0, 2), ['alpha', f.sender.name]);
+  assert.equal(f.changes[0][2].cause, 'disconnected');
+  assert.ok(f.changes[0][2].peer_id);
   const reconnected = await f.connect();
+  await assert.rejects(f.endpoint.call(route, {}, caller), /no longer available/, 'old captured tools are never replayed on a new connection');
   f.revoke();
   assert.equal(reconnected.readyState, 3);
   assert.equal(f.endpoint.status(f.sender.name).connected, false);
   assert.deepEqual(f.endpoint.tools(f.sender.name), []);
+  assert.equal(f.changes[1][2].cause, 'revoked');
 });
 
 test('invalid discovery never enables partially discovered tools', async t => {

@@ -33,6 +33,54 @@ test('Gemini config preserves realtime audio and transcription while adding cont
   assert.ok(f.request().config.inputAudioTranscription);
   assert.ok(f.request().config.outputAudioTranscription);
 });
+test('Gemini sends MCP JSON Schema in the JSON field without losing nested constraints or mutating routes', async () => {
+  const f = fixture(); const diagnostics = [];
+  f.provider.on('diagnostic', event => diagnostics.push(event));
+  const tools = [
+    { name: 'server.get_pending_devices', parameters: { type: 'object', properties: {}, additionalProperties: false } },
+    { name: 'mcp_0242e885a27b_hermes_reminder_create', description: 'Create reminder', parameters: {
+      type: 'object', properties: {
+        days: { type: 'array', items: { type: 'integer', minimum: 0, maximum: 6 }, uniqueItems: true },
+        options: { type: 'object', properties: { channels: { type: 'array', items: { type: 'string' }, uniqueItems: true } } },
+        schedule: { anyOf: [{ type: 'string' }, { type: 'null' }] }
+      }, required: ['days'], additionalProperties: false
+    } }
+  ];
+  const original = JSON.stringify(tools);
+  await f.provider.connect(tools);
+  const declarations = f.request().config.tools[0].functionDeclarations;
+  assert.equal(declarations.length, 2);
+  for (let index = 0; index < tools.length; index++) {
+    assert.equal(declarations[index].name, tools[index].name);
+    assert.equal('parameters' in declarations[index], false, 'never send the restricted Schema alongside JSON Schema');
+    assert.equal(JSON.stringify(declarations[index].parametersJsonSchema), JSON.stringify(tools[index].parameters));
+  }
+  const prepared = diagnostics.find(event => event.event === 'gemini.tool_schema_prepared');
+  assert.equal(prepared.tool_count, 2);
+  assert.equal(prepared.tools[1].index, 1);
+  assert.equal(prepared.tools[1].name, tools[1].name);
+  assert.equal(prepared.tools[1].schema_format, 'parametersJsonSchema');
+  assert.equal(JSON.stringify(prepared).includes('uniqueItems'), false, 'trace lists names/formats rather than raw schemas');
+  declarations[1].parametersJsonSchema.properties.days.items.minimum = 99;
+  assert.equal(JSON.stringify(tools), original, 'SDK/config mutations cannot change the original MCP route schema');
+  assert.equal(f.provider.ready, true);
+  f.provider.close();
+});
+test('Gemini preserves an explicit JSON schema and tools without parameters', async () => {
+  const f = fixture();
+  const schema = { type: 'object', properties: { tags: { type: 'array', items: { type: 'string' }, uniqueItems: true } } };
+  await f.provider.connect([
+    { name: 'already_json', parametersJsonSchema: schema },
+    { name: 'no_arguments' }
+  ]);
+  const declarations = f.request().config.tools[0].functionDeclarations;
+  assert.equal(JSON.stringify(declarations[0].parametersJsonSchema), JSON.stringify(schema));
+  assert.notEqual(declarations[0].parametersJsonSchema, schema);
+  assert.equal('parameters' in declarations[0], false);
+  assert.equal('parameters' in declarations[1], false);
+  assert.equal('parametersJsonSchema' in declarations[1], false);
+  f.provider.close();
+});
 test('Gemini interrupted+complete event never commits an interrupted turn', () => {
   const { provider } = fixture(); const events = [];
   for (const name of ['input_transcription', 'output_transcription', 'turn_complete', 'interrupted']) provider.on(name, () => events.push(name));

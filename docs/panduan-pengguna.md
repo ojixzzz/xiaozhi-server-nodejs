@@ -65,6 +65,12 @@ belum dapat menjawab; periksa log `Provider session closed` yang kini mencantumk
 `phase`, `code`, dan `reason`. `phase=setup` berarti konfigurasi sesi belum
 diterima Gemini. Perbaiki konfigurasi sesuai alasannya lalu buka percakapan baru.
 
+Agent MCP yang tersambung, terputus, atau mencoba sambung ulang otomatis tidak
+mengembalikan perangkat ke standby. Percakapan tetap berjalan; buka percakapan
+baru untuk memuat tools agent yang baru. Perubahan dashboard yang memang perlu
+menutup sesi, misalnya mengubah timeout atau menghapus memori/koneksi, dicatat
+dengan alasan spesifik pada log `session.close_requested`.
+
 ## Membaca notifikasi dari perangkat
 
 Misalnya agent mengirim judul “Laporan sudah selesai” dan isi ringkasan laporan.

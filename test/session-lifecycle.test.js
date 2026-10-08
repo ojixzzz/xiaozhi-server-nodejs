@@ -68,6 +68,10 @@ test('clear and disable synchronously invalidate provider even when peer never a
     assert.ok(connected?.prompt.includes('Remember this old context'));
     const response=await fetch(memoryUrl,{method:operation==='clear'?'DELETE':'PUT',headers,body:JSON.stringify(operation==='clear'?{confirm:'alpha'}:{enabled:false,facts:[]})});
     assert.equal(response.status,200);
+    assert.match(output, /session.close_requested/);
+    assert.match(output, operation==='clear' ? /memory_cleared/ : /memory_disabled/);
+    assert.match(output, /dashboard_api/);
+    assert.match(output, /request_id/);
     assert.ok((await readEvents()).slice(before).some(e=>e.type==='close'),'provider closes before HTTP response, without close acknowledgement');
     const stored=await(await fetch(memoryUrl,{headers})).json();
     assert.deepEqual(stored.turns,[]); assert.deepEqual(stored.facts,[]);

@@ -123,11 +123,24 @@ function hasDedicatedDeviceToken(id) {
   return typeof token === 'string' && token.length > 0 && token !== CLIENT_AUTH_TOKEN &&
     !Object.entries(devices).some(([other, device]) => other !== id && device.token === token);
 }
-function closeDeviceSessions(id, reason = 'device_settings_changed') {
+function mutationContext(req, operation, changes = {}) {
+  return { source: 'dashboard_api', request_id: crypto.randomUUID(), operation,
+    method: req.method, route: req.route.path, peer: req.socket.remoteAddress, ...changes };
+}
+function closeDeviceSessions(id, reason = 'device_settings_changed', context = {}) {
+  logger.info('Device session close requested:', { device_id: id, reason,
+    active_voice_count: activeVoiceSockets.get(id)?.size || 0, ...context });
   for (const ws of activeVoiceSockets.get(id) || []) {
+    voiceTraces.get(ws)?.event('session.close_requested', { reason, ...context });
     voiceTeardowns.get(ws)?.(reason);
     ws.close(1000, reason);
   }
+}
+function reportMcpChange(deviceId, connectionId, event, details = {}) {
+  const fields = { source: 'mcp_lifecycle', connection_id: connectionId,
+    effect: details.cause === 'revoked' ? 'voice_invalidation' : 'tools_apply_next_session', ...details };
+  logger.info('MCP lifecycle change:', { event, device_id: deviceId, ...fields });
+  for (const ws of activeVoiceSockets.get(deviceId) || []) voiceTraces.get(ws)?.event(event, fields);
 }
 
 try {
@@ -191,10 +204,15 @@ try {
     onRegistered: (deviceId, serverId) => {
       const device = devices[deviceId];
       const previousSelection = device.enabled_mcp_devices;
-      device.enabled_mcp_devices = [...new Set([...(device.enabled_mcp_devices || []), serverId])];
-      try { saveDevices(); }
-      catch (error) { device.enabled_mcp_devices = previousSelection; throw error; }
-      closeRemoteMcpSessions(serverId);
+      const selectionChanged = !previousSelection?.includes(serverId);
+      if (selectionChanged) {
+        device.enabled_mcp_devices = [...new Set([...(previousSelection || []), serverId])];
+        try { saveDevices(); }
+        catch (error) { device.enabled_mcp_devices = previousSelection; throw error; }
+      }
+      // Discovery/reconnect is background activity. Retain the current voice
+      // provider and its tool snapshot; newly discovered tools load next time.
+      reportMcpChange(deviceId, serverId, 'mcp.tools_available', { selection_changed: selectionChanged });
     }
   });
 } catch { logger.error('Dashboard agent setup unavailable; check the private agent configuration file.'); }
@@ -430,7 +448,12 @@ if (agentConnections) endpointMcp = new McpEndpoint({
   isDeviceAllowed: id => Object.hasOwn(devices, id) && devices[id].status === 'approved' &&
     hasDedicatedDeviceToken(id) && (devices[id].llm_backend || LLM_BACKEND) === 'gemini',
   onReady: (deviceId, connectionId) => agentConnections.onRegistered(deviceId, connectionId),
-  onChanged: (deviceId, connectionId) => closeRemoteMcpSessions(connectionId),
+  onChanged: (deviceId, connectionId, details) => {
+    reportMcpChange(deviceId, connectionId, 'mcp.endpoint_disconnected', details);
+    // Explicit credential revocation still invalidates the active conversation.
+    if (details?.cause === 'revoked') closeDeviceSessions(deviceId, 'agent_connection_revoked',
+      { source: 'mcp_revocation', connection_id: connectionId });
+  },
   publish: (sender, args) => notificationIngress.publishSender(sender, args),
   publicError: notificationPublicError
 });
@@ -517,7 +540,7 @@ app.post('/api/devices/:mac/transport', requireAuth, featureDevice, (req, res) =
   }
   device.transport=req.body.transport;
   saveDevices();
-  closeDeviceSessions(id);
+  closeDeviceSessions(id, 'transport_changed', mutationContext(req, 'transport_save', { transport: device.transport }));
   res.json({success:true,transport:device.transport,reconnect_required:true});
 });
 function audioAdmin(req,res,next) {
@@ -604,7 +627,7 @@ app.put('/api/devices/:mac/memory', requireAuth, featureDevice, async (req, res)
   }
   try {
     const snapshot = await memoryStore.configure(req.params.mac, { enabled: req.body.enabled, facts: req.body.facts });
-    if (!snapshot.enabled) closeDeviceSessions(req.params.mac);
+    if (!snapshot.enabled) closeDeviceSessions(req.params.mac, 'memory_disabled', mutationContext(req, 'memory_disable'));
     res.json(memoryView(snapshot));
   }
   catch (error) { res.status(error instanceof TypeError || error instanceof RangeError ? 400 : 503).json({ error: 'Invalid memory settings or storage unavailable' }); }
@@ -613,7 +636,7 @@ app.delete('/api/devices/:mac/memory', requireAuth, featureDevice, async (req, r
   if (!req.body || req.body.confirm !== req.params.mac) return res.status(400).json({ error: 'Confirm the exact device ID' });
   try {
     const snapshot = await memoryStore.clear(req.params.mac);
-    closeDeviceSessions(req.params.mac);
+    closeDeviceSessions(req.params.mac, 'memory_cleared', mutationContext(req, 'memory_clear'));
     res.json(memoryView(snapshot));
   }
   catch { res.status(503).json({ error: 'Memory storage unavailable' }); }
@@ -691,7 +714,7 @@ app.delete('/api/devices/:mac', requireAuth, async (req, res) => {
   devices[mac]=revoked;
   try {saveDevices();}
   catch {devices[mac]=previous;return res.status(503).json({error:'Could not revoke device'});}
-  closeDeviceSessions(mac);
+  closeDeviceSessions(mac, 'device_revoked', mutationContext(req, 'device_delete'));
   try {
     await Promise.all([memoryStore.configure(mac,{enabled:false,facts:[]}),notificationInbox.clear(mac)]);
     delete devices[mac];
@@ -707,6 +730,7 @@ app.post('/api/devices/:mac/config', requireAuth, (req, res) => {
       try { validateVoiceIdleSeconds(req.body.voice_idle_timeout_seconds); }
       catch (error) { return res.status(400).json({ error: error.message }); }
     }
+    const previousIdleSeconds = resolveVoiceIdleSeconds(devices[mac].voice_idle_timeout_seconds, VOICE_IDLE_TIMEOUT_SECONDS);
     const idleChanged = req.body.voice_idle_timeout_seconds !== undefined &&
       resolveVoiceIdleSeconds(req.body.voice_idle_timeout_seconds, VOICE_IDLE_TIMEOUT_SECONDS) !==
       resolveVoiceIdleSeconds(devices[mac].voice_idle_timeout_seconds, VOICE_IDLE_TIMEOUT_SECONDS);
@@ -724,7 +748,9 @@ app.post('/api/devices/:mac/config', requireAuth, (req, res) => {
     if (req.body.voice_idle_timeout_seconds === null) delete devices[mac].voice_idle_timeout_seconds;
     else if (req.body.voice_idle_timeout_seconds !== undefined) devices[mac].voice_idle_timeout_seconds = req.body.voice_idle_timeout_seconds;
     saveDevices();
-    if (idleChanged) closeDeviceSessions(mac);
+    if (idleChanged) closeDeviceSessions(mac, 'voice_idle_setting_changed', mutationContext(req, 'device_config_save', {
+      previous_idle_seconds: previousIdleSeconds, new_idle_seconds: resolveVoiceIdleSeconds(devices[mac].voice_idle_timeout_seconds, VOICE_IDLE_TIMEOUT_SECONDS)
+    }));
     res.json({ success: true });
   } else {
     res.status(404).json({ error: 'Device not found' });
@@ -737,9 +763,9 @@ function remoteMcpAdmin(req, res, next) {
     next();
   });
 }
-function closeRemoteMcpSessions(id) {
+function closeRemoteMcpSessions(id, reason, context) {
   for (const [deviceId, device] of Object.entries(devices)) {
-    if (device.enabled_mcp_devices?.includes(id)) closeDeviceSessions(deviceId);
+    if (device.enabled_mcp_devices?.includes(id)) closeDeviceSessions(deviceId, reason, { ...context, connection_id: id });
   }
 }
 function agentAdmin(req, res, next) {
@@ -766,8 +792,9 @@ app.post('/api/agent_connections/:id/export', requireAuth, agentAdmin, (req, res
 app.delete('/api/agent_connections/:id', requireAuth, agentAdmin, async (req, res) => {
   try {
     const serverId = await agentConnections.remove(req.params.id);
-    closeRemoteMcpSessions(req.params.id);
-    if (serverId) closeRemoteMcpSessions(serverId);
+    const context = mutationContext(req, 'agent_connection_delete');
+    closeRemoteMcpSessions(req.params.id, 'agent_connection_revoked', context);
+    if (serverId) closeRemoteMcpSessions(serverId, 'agent_connection_revoked', context);
     for (const device of Object.values(devices)) device.enabled_mcp_devices = device.enabled_mcp_devices?.filter(id => id !== serverId && id !== req.params.id) || [];
     saveDevices();
     res.json({ success: true });
@@ -777,20 +804,20 @@ app.get('/api/remote_mcp_servers', requireAuth, remoteMcpAdmin, (req,res)=>res.j
 app.post('/api/remote_mcp_servers', requireAuth, remoteMcpAdmin, async(req,res)=>{
   try {
     const saved=await remoteMcp.save(req.body);
-    closeRemoteMcpSessions(saved.id);
+    closeRemoteMcpSessions(saved.id, 'remote_mcp_settings_changed', mutationContext(req, 'remote_mcp_save'));
     res.json({server:saved,reconnect_required:true});
   } catch(error) {res.status(error.status || 503).json({error:error.status ? error.message : 'Could not save remote MCP connection'});}
 });
 app.post('/api/remote_mcp_servers/:id/connect', requireAuth, remoteMcpAdmin, async(req,res)=>{
   try {
-    closeRemoteMcpSessions(req.params.id);
+    closeRemoteMcpSessions(req.params.id, 'remote_mcp_refresh_requested', mutationContext(req, 'remote_mcp_refresh'));
     res.json({server:await remoteMcp.refresh(req.params.id),reconnect_required:true});
   } catch(error) {res.status(error.status || 503).json({error:error.status ? error.message : 'Could not refresh remote MCP connection'});}
 });
 app.delete('/api/remote_mcp_servers/:id', requireAuth, remoteMcpAdmin, async(req,res)=>{
   try {
     await remoteMcp.remove(req.params.id);
-    closeRemoteMcpSessions(req.params.id);
+    closeRemoteMcpSessions(req.params.id, 'remote_mcp_removed', mutationContext(req, 'remote_mcp_delete'));
     for (const device of Object.values(devices)) device.enabled_mcp_devices=device.enabled_mcp_devices?.filter(id=>id!==req.params.id) || [];
     saveDevices();
     res.json({success:true,reconnect_required:true});

@@ -65,8 +65,12 @@ tool names are isolated. HTTP/SSE requires an adapter or the advanced flow below
 
 Once discovery finishes, tools are automatically selected for the paired device.
 Wait for **Terhubung dua arah · … tools** and reopen the voice conversation.
-Connection changes close affected conversations to discard stale definitions.
-Restart the pipe after changing tools to rediscover them.
+Background pipe discovery, disconnects and reconnects keep the active voice
+conversation open. New tools load on the next conversation; captured tools from a
+disconnected peer cannot be replayed against its replacement. Reopen the voice
+conversation to use reconnected tools. Restart the pipe after changing tools to
+rediscover them. Explicit revocation/deletion and advanced HTTP settings changes
+still invalidate affected voice sessions.
 
 ## Send inbox messages with the same endpoint
 
