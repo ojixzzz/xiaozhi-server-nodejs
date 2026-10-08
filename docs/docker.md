@@ -202,6 +202,17 @@ no further activity/completion arrives for two minutes, followed by the full
 speech idle window. Apply env changes by recreating the Compose service; device
 settings persist in `devices.json`. MQTT remains connected after a speech timeout.
 
+A Gemini disconnect does not immediately end the device voice channel. Transient
+failures get one reconnect attempt after one second; configuration/policy failures
+are reported without an automatic retry. The speech idle setting still applies
+(including `0`). While AI is unavailable it cannot answer. Inspect the relay log
+`Provider session closed` for the model, `phase=setup` or `phase=ready`, WebSocket
+close `code`, and `reason`. Connected/listening is announced only after Gemini
+accepts session setup. A discovery timeout warning appears only if device MCP
+discovery actually exceeds five seconds, not after successful discovery.
+See the [session tracing guide](troubleshooting-logs.md) for log commands, event
+fields, idle snapshots, provider close diagnostics, and `LOG_LEVEL=debug`.
+
 The Compose named volume `xiaozhi-data`, mounted at `/app/data`, retains:
 
 - `devices.json` and `mcp_devices.json`

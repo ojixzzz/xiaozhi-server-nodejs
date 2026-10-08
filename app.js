@@ -9,6 +9,7 @@ const WebSocket = require('ws');
 const prism = require('prism-media');
 const http = require('http');
 const crypto = require('crypto');
+const { performance } = require('node:perf_hooks');
 const winston = require('winston');
 const DailyRotateFile = require('winston-daily-rotate-file');
 const path = require('path');
@@ -41,6 +42,7 @@ const { RemoteMcpServers, REMOTE_MCP_INSTRUCTION } = require('./lib/remote-mcp')
 const { AgentConnections } = require('./lib/agent-connections');
 const { McpEndpoint, MAX_PAYLOAD: MCP_ENDPOINT_MAX_PAYLOAD } = require('./lib/mcp-endpoint');
 const { VoiceIdleTimer, validateVoiceIdleSeconds, parseVoiceIdleSeconds, resolveVoiceIdleSeconds, parseVoiceActivityThreshold } = require('./lib/voice-idle');
+const { sanitizeLogValue, formatLogEntry, createSessionTrace } = require('./lib/session-trace');
 
 // Configuration
 const GEMINI_API_KEY = process.env.GEMINI_API_KEY;
@@ -71,13 +73,12 @@ const DEVICES_FILE_PATH = path.join(DATA_DIR, 'devices.json');
 const MCP_DEVICES_FILE_PATH = path.join(DATA_DIR, 'mcp_devices.json');
 
 // Configure Winston Logger
+const logSecrets = Object.entries(process.env).filter(([name]) => /(?:KEY|TOKEN|PASSWORD|SECRET|SIGNATURE)/i.test(name)).map(([, value]) => value);
 const logger = winston.createLogger({
-  level: 'debug',
+  level: process.env.LOG_LEVEL || 'info',
   format: winston.format.combine(
     winston.format.timestamp(),
-    winston.format.printf(({ timestamp, level, message }) => {
-      return `[${timestamp}] ${level.toUpperCase()}: ${message}`;
-    })
+    winston.format.printf(info => formatLogEntry(info, logSecrets))
   ),
   transports: [
     new winston.transports.Console(),
@@ -92,8 +93,8 @@ const logger = winston.createLogger({
   ],
 });
 
-process.on('unhandledRejection', (reason, promise) => {
-  logger.error('Unhandled Rejection at:', promise, 'reason:', reason);
+process.on('unhandledRejection', reason => {
+  logger.error('Unhandled Rejection:', reason);
 });
 
 process.on('uncaughtException', (error) => {
@@ -122,10 +123,10 @@ function hasDedicatedDeviceToken(id) {
   return typeof token === 'string' && token.length > 0 && token !== CLIENT_AUTH_TOKEN &&
     !Object.entries(devices).some(([other, device]) => other !== id && device.token === token);
 }
-function closeDeviceSessions(id) {
+function closeDeviceSessions(id, reason = 'device_settings_changed') {
   for (const ws of activeVoiceSockets.get(id) || []) {
-    voiceTeardowns.get(ws)?.();
-    ws.close(1000, 'Memory settings changed; reconnect');
+    voiceTeardowns.get(ws)?.(reason);
+    ws.close(1000, reason);
   }
 }
 
@@ -241,12 +242,22 @@ const builtinTools = [
 const mcpClients = new Map(); // ws -> { id: string, tools: array }
 let mcpMessageId = 1;
 const mcpCallbacks = new Map(); // id -> resolve function
+const voiceTraces = new WeakMap();
 
 function sendMcpRequest(ws, method, params) {
   return new Promise((resolve, reject) => {
     const info = mcpClients.get(ws);
     const id = mcpMessageId++;
-    mcpCallbacks.set(id, resolve);
+    const trace = voiceTraces.get(ws);
+    const started = performance.now();
+    let timeout;
+    mcpCallbacks.set(id, response => {
+      clearTimeout(timeout);
+      trace?.event('mcp.rpc_response', { rpc_id: id, method, duration_ms: Math.round(performance.now() - started),
+        failed: Boolean(response.error), error: response.error,
+        tool_count: response.result?.tools?.length }, response.error ? 'warn' : 'info');
+      resolve(response);
+    });
 
     let requestPayload = { jsonrpc: "2.0", id, method, params };
     if (info && info.isXiaozhi) {
@@ -254,12 +265,21 @@ function sendMcpRequest(ws, method, params) {
     }
 
     logger.debug(`[MCP] Sending ${method} to ${info?.id || 'unknown'}`);
-    ws.send(JSON.stringify(requestPayload));
+    trace?.event('mcp.rpc_request', { rpc_id: id, method, tool: method === 'tools/call' ? params.name : undefined });
+    try { ws.send(JSON.stringify(requestPayload)); }
+    catch (error) {
+      mcpCallbacks.delete(id);
+      trace?.event('mcp.rpc_send_error', { rpc_id: id, method, error }, 'error');
+      reject(error);
+      return;
+    }
 
     const timeoutMs = method === 'tools/call' ? 5000 : 30000;
-    setTimeout(() => {
+    timeout = setTimeout(() => {
       if (mcpCallbacks.has(id)) {
         mcpCallbacks.delete(id);
+        trace?.event('mcp.rpc_timeout', { rpc_id: id, method, duration_ms: Math.round(performance.now() - started),
+          outcome: method === 'tools/call' ? 'dispatched_without_confirmation' : 'failed' }, 'warn');
         if (method === 'tools/call') {
           logger.warn(`[MCP] Timeout for ${method} on ${info?.id || 'unknown'}, assuming success.`);
           resolve({ result: { success: true, note: "Action dispatched, but no confirmation received (timeout)." } });
@@ -1059,6 +1079,11 @@ wssMcp.on('connection', (ws, req) => {
 // Xiaozhi Voice Session Logic
 wssXiaozhi.on('connection', (ws, req) => {
   const sessionId = crypto.randomUUID();
+  const macAddress = req.headers['device-id'] || 'unknown';
+  let providerAttempt = 0;
+  const trace = createSessionTrace({ logger, sessionId, deviceId: macAddress,
+    context: () => ({ attempt: providerAttempt }), secrets: [...logSecrets, devices[macAddress]?.token, CLIENT_AUTH_TOKEN] });
+  trace.event('device.connection_requested', { peer: req.socket.remoteAddress, path: '/xiaozhi/v1/' });
   logger.info(`[${sessionId}] New Xiaozhi connection attempt...`);
 
   const url = new URL(req.url, `http://${req.headers.host}`);
@@ -1067,10 +1092,10 @@ wssXiaozhi.on('connection', (ws, req) => {
 
   if (authHeader && authHeader.startsWith('Bearer ')) token = authHeader.substring(7);
 
-  const macAddress = req.headers['device-id'] || 'unknown';
   let deviceConfig = devices[macAddress];
   
   if (!deviceConfig || deviceConfig.status !== 'approved') {
+    trace.event('device.auth_rejected', { reason: 'device_not_approved', close_code: 1008 }, 'warn');
     logger.warn(`[${sessionId}] Authentication failed. Device ${macAddress} not registered.`);
     ws.close(1008, 'Unauthorized');
     return;
@@ -1079,6 +1104,7 @@ wssXiaozhi.on('connection', (ws, req) => {
   const expectedToken = deviceConfig.token || CLIENT_AUTH_TOKEN;
 
   if (token !== expectedToken) {
+    trace.event('device.auth_rejected', { reason: 'invalid_token', close_code: 1008 }, 'warn');
     logger.warn(`[${sessionId}] Authentication failed.`);
     ws.close(1008, 'Unauthorized');
     return;
@@ -1099,6 +1125,8 @@ wssXiaozhi.on('connection', (ws, req) => {
     enabled_mcp_devices: []
   };
 
+  trace.event('device.authenticated', { dedicated_credential: hasDedicatedDeviceToken(macAddress) });
+  voiceTraces.set(ws, trace);
   logger.info(`[${sessionId}] Authenticated successfully. Device: ${macAddress}`);
   if (!activeVoiceSockets.has(macAddress)) activeVoiceSockets.set(macAddress, new Set());
   activeVoiceSockets.get(macAddress).add(ws);
@@ -1107,10 +1135,15 @@ wssXiaozhi.on('connection', (ws, req) => {
   let connectingProvider = null;
   let sessionStarting = false;
   let sessionClosed = false;
+  let providerRetryTimer = null;
+  let providerRetries = 0;
+  let providerGeneration = 0;
+  let providerToolAbort = null;
+  let cancelMcpDiscovery = null;
+  let mcpDiscoveryPending = false;
   let inboxAnnouncement = null;
   const remoteToolRoutes = new Map();
   const endpointToolRoutes = new Map();
-  const remoteToolAbort = new AbortController();
   let memoryTurns = null;
   let isSpeaking = false;
   let modelDone = false;
@@ -1120,13 +1153,28 @@ wssXiaozhi.on('connection', (ws, req) => {
   const FRAME_DURATION_MS = 60;
   let outputTranscriptionBuffer = '';
   let ttsTextQueue = [];
+  let finishReason = null;
+  let lastSpeechLogAt = 0;
+  const metrics = { input_packets: 0, pcm_frames: 0, speech_frames: 0, provider_audio_chunks: 0,
+    playback_packets: 0, buffer_dropped: 0, turns: 0, tool_calls: 0 };
   let lastTtsTime = 0;
   let currentTtsDelay = 0;
   const voiceIdle = new VoiceIdleTimer({
     timeoutMs: resolveVoiceIdleSeconds(deviceConfig.voice_idle_timeout_seconds, VOICE_IDLE_TIMEOUT_SECONDS) * 1000,
     threshold: VOICE_ACTIVITY_THRESHOLD,
-    onIdle: () => finishVoiceSession('silence_timeout')
+    onIdle: () => finishVoiceSession('silence_timeout'),
+    onEvent: (event, fields) => trace.event(event, fields)
   });
+
+  trace.event('session.configured', { backend: deviceConfig.llm_backend || LLM_BACKEND,
+    idle_seconds: voiceIdle.timeoutMs / 1000, idle_source: deviceConfig.voice_idle_timeout_seconds == null ? 'server' : 'device',
+    activity_threshold: VOICE_ACTIVITY_THRESHOLD, selected_mcp_count: deviceConfig.enabled_mcp_devices?.length || 0 });
+  const traceInterval = setInterval(() => {
+    trace.event('session.status', { ...voiceIdle.snapshot(), metrics, provider_ready: Boolean(provider),
+      provider_starting: sessionStarting, retry_pending: Boolean(providerRetryTimer), buffered_frames: audioBuffer.length,
+      playback_queue: audioOutputQueue.length, speaking: isSpeaking });
+  }, 15000);
+  traceInterval.unref();
 
   function queueTtsText(text) {
     if (!text) return;
@@ -1148,15 +1196,24 @@ wssXiaozhi.on('connection', (ws, req) => {
 
   decoder.on('data', (pcmChunk) => {
     if (sessionClosed) return;
-    voiceIdle.pcm(pcmChunk);
+    metrics.pcm_frames++;
+    if (voiceIdle.pcm(pcmChunk)) {
+      metrics.speech_frames++;
+      if (!lastSpeechLogAt || Date.now() - lastSpeechLogAt >= 10000) {
+        lastSpeechLogAt = Date.now();
+        trace.event('audio.speech_detected', { ...voiceIdle.snapshot(), pcm_bytes: pcmChunk.length });
+      }
+    }
     if (provider) {
       provider.sendAudio(pcmChunk);
     } else {
       audioBuffer.push(pcmChunk);
+      // Bound microphone buffering while the provider is starting/recovering.
+      if (audioBuffer.length > 50) { audioBuffer.shift(); metrics.buffer_dropped++; }
     }
   });
 
-  decoder.on('error', (err) => logger.error(`[${sessionId}] Decoder error:`, err));
+  decoder.on('error', err => { trace.event('audio.decode_error', { error: err }, 'error'); });
 
   encoder.on('data', (opusChunk) => {
     if (sessionClosed) return;
@@ -1167,7 +1224,7 @@ wssXiaozhi.on('connection', (ws, req) => {
 
   encoder.on('error', (err) => {
     inboxAnnouncement?.discard();
-    logger.error(`[${sessionId}] Encoder error:`, err);
+    trace.event('audio.encode_error', { error: err }, 'error');
   });
 
   function scheduleAudioSend() {
@@ -1196,6 +1253,7 @@ wssXiaozhi.on('connection', (ws, req) => {
           if (ws.readyState === WebSocket.OPEN) {
             voiceIdle.hold('playback');
             ws.send(chunkToSend);
+            metrics.playback_packets++;
             inboxAnnouncement?.audioSent();
           }
         } else if ((modelDone || !isSpeaking) && ttsTextQueue.length === 0) {
@@ -1208,8 +1266,9 @@ wssXiaozhi.on('connection', (ws, req) => {
           clearInterval(audioSendInterval);
           audioSendInterval = null;
           voiceIdle.release('playback');
+          trace.event('audio.playback_drained', { turn_complete: modelDone, packets_sent: metrics.playback_packets });
           if (modelDone && ws.readyState === WebSocket.OPEN) {
-            inboxAnnouncement?.playbackComplete().catch(()=>logger.warn(`[${sessionId}] Notification title acknowledgment failed.`));
+            inboxAnnouncement?.playbackComplete().catch(error => trace.event('inbox.ack_failed', { error }, 'warn'));
           }
           modelDone = false;
         }
@@ -1218,8 +1277,27 @@ wssXiaozhi.on('connection', (ws, req) => {
   }
 
   async function startSession() {
-    if (sessionStarting || provider || sessionClosed) return;
+    if (sessionStarting || provider || sessionClosed) {
+      trace.event('provider.start_skipped', { provider_ready: Boolean(provider), provider_starting: sessionStarting, session_closed: sessionClosed }, 'debug');
+      return;
+    }
+    const attempt = ++providerAttempt;
+    const attemptStarted = performance.now();
+    trace.event('provider.preparing', { attempt });
+    if (providerRetryTimer) clearTimeout(providerRetryTimer);
+    providerRetryTimer = null;
     sessionStarting = true;
+    const generation = ++providerGeneration;
+    const toolAbort = new AbortController();
+    providerToolAbort?.abort();
+    providerToolAbort = toolAbort;
+    voiceIdle.start();
+    inboxAnnouncement?.discard();
+    memoryTurns?.close();
+    inboxAnnouncement = null;
+    memoryTurns = null;
+    remoteToolRoutes.clear();
+    endpointToolRoutes.clear();
     try {
       // Gather tools from approved and enabled MCP clients
       const toolsMap = new Map();
@@ -1290,13 +1368,14 @@ wssXiaozhi.on('connection', (ws, req) => {
         config.output_transcription = true;
         inboxAnnouncement = createInboxAnnouncement({
           inbox:notificationInbox,deviceId:macAddress,maxChars:inboxToolMaxChars,
-          isActive:()=>!sessionClosed && devices[macAddress]?.status === 'approved' && hasDedicatedDeviceToken(macAddress)
+          isActive:()=>generation === providerGeneration && !sessionClosed && devices[macAddress]?.status === 'approved' && hasDedicatedDeviceToken(macAddress)
         });
       }
       // Memory reads occur only before session setup, never on audio chunks.
       if (activeBackend === 'gemini' && hasDedicatedDeviceToken(macAddress)) {
         try {
           const snapshot = await memoryStore.get(macAddress);
+          trace.event('memory.context_loaded', { enabled: snapshot.enabled, attempt });
           if (snapshot.enabled) {
             config.prompt = (config.prompt || 'You are a helpful assistant. Keep responses short.') + '\n' + memoryStore.context(snapshot);
             config.input_transcription = true;
@@ -1304,6 +1383,7 @@ wssXiaozhi.on('connection', (ws, req) => {
             memoryTurns = new TurnBuffer({ store: memoryStore, deviceId: macAddress, epoch: snapshot.epoch });
           }
         } catch (error) {
+          trace.event('memory.context_failed', { attempt, error }, 'warn');
           logger.warn(`[${sessionId}] Memory unavailable; starting without saved context.`);
         }
       }
@@ -1314,6 +1394,8 @@ wssXiaozhi.on('connection', (ws, req) => {
       const isConfigured = providerConfigDef && (!providerConfigDef.envVars || providerConfigDef.envVars.every(envVar => !!process.env[envVar]));
 
       if (!isConfigured) {
+          trace.event('provider.configuration_rejected', { attempt, backend: activeBackend,
+            missing_env: providerConfigDef?.envVars?.filter(name => !process.env[name]) || [] }, 'error');
           logger.error(`[${sessionId}] Provider ${activeBackend} is missing required environment variables.`);
           if (ws.readyState === WebSocket.OPEN) {
               ws.send(JSON.stringify({ type: 'error', session_id: sessionId, data: `Server Error: Provider ${activeBackend} is not properly configured on the server.` }));
@@ -1352,6 +1434,7 @@ wssXiaozhi.on('connection', (ws, req) => {
           config.voice = deviceConfig.llama_voice || providerConfigDef.voices[0];
           newProvider = new LlamaLiquidInterleavedProvider(config);
       } else {
+          trace.event('provider.configuration_rejected', { attempt, backend: activeBackend, reason: 'unknown_backend' }, 'error');
           logger.error(`[${sessionId}] Unknown backend: ${activeBackend}`);
           if (ws.readyState === WebSocket.OPEN) {
               ws.send(JSON.stringify({ type: 'error', session_id: sessionId, data: `Server Error: Unknown backend ${activeBackend}` }));
@@ -1361,62 +1444,84 @@ wssXiaozhi.on('connection', (ws, req) => {
       }
 
       connectingProvider = newProvider;
+      const pendingToolCalls = new Map();
+      const isCurrentProvider = () => !sessionClosed && connectingProvider === newProvider;
+      newProvider.on('diagnostic', diagnostic => {
+          if (isCurrentProvider()) trace.event(diagnostic.event, { ...diagnostic, attempt });
+      });
       const sendToolResponse = newProvider.sendToolResponse.bind(newProvider);
       newProvider.sendToolResponse = (callId, name, response) => {
-          if (sessionClosed) return;
+          if (!isCurrentProvider()) return;
           voiceIdle.hold('response');
+          const call = pendingToolCalls.get(callId);
+          pendingToolCalls.delete(callId);
+          let failed = false;
+          try { const result = JSON.parse(response); failed = Boolean(result?.error || result?.isError); } catch {}
+          trace.event('tool.response_submitted', { attempt, call_id: callId, tool: name, failed,
+            duration_ms: call ? Math.round(performance.now() - call.started) : null, response_chars: typeof response === 'string' ? response.length : null }, failed ? 'warn' : 'info');
           try { return sendToolResponse(callId, name, response); }
           finally { voiceIdle.release(`tool:${callId}`); }
       };
       newProvider.on('listen_stop', () => {
-          if (sessionClosed) return;
+          if (!isCurrentProvider()) return;
           voiceIdle.hold('response');
           if (ws.readyState === WebSocket.OPEN) {
               ws.send(JSON.stringify({ type: 'listen', state: 'stop', session_id: sessionId }));
+              trace.event('device.listen_stopped', { attempt, reason: 'provider_response' });
           }
       });
 
       newProvider.on('connected', () => {
-          if (sessionClosed) { newProvider.close(); return; }
+          if (!isCurrentProvider()) { newProvider.close(); return; }
           voiceIdle.start();
+          voiceIdle.resume();
+          trace.event('provider.ready', { attempt, backend: activeBackend, model: config.model, voice: config.voice,
+            setup_ms: Math.round(performance.now() - attemptStarted), buffered_frames: audioBuffer.length });
           logger.info(`[${sessionId}] Connected to ${activeBackend} API`);
           if (ws.readyState === WebSocket.OPEN) {
               const payload = { type: 'listen', state: 'start', session_id: sessionId };
               ws.send(JSON.stringify(payload));
+              trace.event('device.listen_started', { attempt });
           }
           
           provider = newProvider;
           
           process.nextTick(() => {
-              if (provider && audioBuffer.length > 0) {
-                  audioBuffer.forEach(chunk => provider.sendAudio(chunk));
-                  audioBuffer.length = 0;
+              if (isCurrentProvider() && provider === newProvider && audioBuffer.length > 0) {
+                  const buffered = audioBuffer;
+                  audioBuffer = [];
+                  for (const chunk of buffered) {
+                      if (!isCurrentProvider()) break;
+                      newProvider.sendAudio(chunk);
+                  }
               }
           });
       });
 
       newProvider.on('audio_output', (audioBuf) => {
-          if (sessionClosed) return;
+          if (!isCurrentProvider()) return;
+          metrics.provider_audio_chunks++;
           voiceIdle.hold('response');
           voiceIdle.hold('playback');
           if (!isSpeaking) {
               isSpeaking = true;
+              trace.event('audio.output_started', { attempt, first_chunk_bytes: audioBuf.length });
               ws.send(JSON.stringify({ type: 'tts', state: 'start', session_id: sessionId }));
           }
           encoder.write(audioBuf);
       });
 
       newProvider.on('input_transcription', (text) => {
-          if (sessionClosed) return;
-          if (typeof text === 'string' && text.trim()) voiceIdle.activity();
+          if (!isCurrentProvider()) return;
+          if (typeof text === 'string' && text.trim()) { voiceIdle.activity(); trace.event('transcription.input', { attempt, chars: text.length }, 'debug'); }
           inboxAnnouncement?.addInput(text);
           memoryTurns?.addInput(text);
           if (deviceConfig.input_transcription && ws.readyState === WebSocket.OPEN) ws.send(JSON.stringify({ type: 'stt', session_id: sessionId, text }));
       });
 
       newProvider.on('output_transcription', (text) => {
-          if (sessionClosed) return;
-          if (typeof text === 'string' && text.trim()) voiceIdle.hold('response');
+          if (!isCurrentProvider()) return;
+          if (typeof text === 'string' && text.trim()) { voiceIdle.hold('response'); trace.event('transcription.output', { attempt, chars: text.length }, 'debug'); }
           inboxAnnouncement?.addOutput(text);
           memoryTurns?.addOutput(text);
           if (!deviceConfig.output_transcription) return;
@@ -1434,10 +1539,12 @@ wssXiaozhi.on('connection', (ws, req) => {
       });
 
       newProvider.on('turn_complete', () => {
-          if (sessionClosed) return;
+          if (!isCurrentProvider()) return;
+          metrics.turns++;
+          trace.event('provider.turn_complete', { attempt, turn: metrics.turns, playback_queue: audioOutputQueue.length });
           voiceIdle.release('response');
           inboxAnnouncement?.turnComplete();
-          if (memoryTurns) memoryTurns.complete().catch(() => logger.warn(`[${sessionId}] Memory write failed.`));
+          if (memoryTurns) memoryTurns.complete().catch(error => trace.event('memory.write_failed', { attempt, error }, 'warn'));
           if (outputTranscriptionBuffer.length > 0 && deviceConfig.output_transcription) {
               queueTtsText(outputTranscriptionBuffer);
               outputTranscriptionBuffer = '';
@@ -1446,7 +1553,8 @@ wssXiaozhi.on('connection', (ws, req) => {
       });
 
       newProvider.on('interrupted', () => {
-          if (sessionClosed) return;
+          if (!isCurrentProvider()) return;
+          trace.event('provider.interrupted', { attempt, playback_queue: audioOutputQueue.length });
           voiceIdle.release('response');
           voiceIdle.release('playback');
           inboxAnnouncement?.discard();
@@ -1465,7 +1573,11 @@ wssXiaozhi.on('connection', (ws, req) => {
       });
 
       newProvider.on('tool_call', (callId, name, args) => {
-          if (sessionClosed) return;
+          if (!isCurrentProvider()) return;
+          metrics.tool_calls++;
+          pendingToolCalls.set(callId, { started: performance.now() });
+          trace.event('tool.requested', { attempt, call_id: callId, tool: name,
+            route: endpointToolRoutes.has(name) ? 'endpoint' : remoteToolRoutes.has(name) ? 'remote_http' : name.startsWith('notifications_') ? 'inbox' : 'device_or_builtin' });
           voiceIdle.hold(`tool:${callId}`);
           voiceIdle.hold('response');
           const endpointRoute = endpointToolRoutes.get(name);
@@ -1474,10 +1586,11 @@ wssXiaozhi.on('connection', (ws, req) => {
               newProvider.sendToolResponse(callId, name, JSON.stringify({ error: 'MCP endpoint is no longer selected for this device' }));
               return;
             }
-            endpointMcp.call(endpointRoute, args, { deviceId: macAddress, sessionId, signal: remoteToolAbort.signal }).then(result => {
-              if (!sessionClosed) newProvider.sendToolResponse(callId, name, JSON.stringify(result));
+            endpointMcp.call(endpointRoute, args, { deviceId: macAddress, sessionId, signal: toolAbort.signal }).then(result => {
+              if (isCurrentProvider()) newProvider.sendToolResponse(callId, name, JSON.stringify(result));
             }).catch(error => {
-              if (!sessionClosed) newProvider.sendToolResponse(callId, name, JSON.stringify({ error: error.message }));
+              if (isCurrentProvider()) trace.event('tool.error', { attempt, call_id: callId, tool: name, error }, 'warn');
+              if (isCurrentProvider()) newProvider.sendToolResponse(callId, name, JSON.stringify({ error: error.message }));
             });
             return;
           }
@@ -1488,19 +1601,21 @@ wssXiaozhi.on('connection', (ws, req) => {
               newProvider.sendToolResponse(callId,name,JSON.stringify({error:'Remote MCP connection is no longer enabled for this device'}));
               return;
             }
-            remoteMcp.call(remoteRoute,args,{deviceId:macAddress,sessionId,signal:remoteToolAbort.signal}).then(result=>{
-              if(!sessionClosed) newProvider.sendToolResponse(callId,name,JSON.stringify(result));
+            remoteMcp.call(remoteRoute,args,{deviceId:macAddress,sessionId,signal:toolAbort.signal}).then(result=>{
+              if(isCurrentProvider()) newProvider.sendToolResponse(callId,name,JSON.stringify(result));
             }).catch(error=>{
-              if(!sessionClosed) newProvider.sendToolResponse(callId,name,JSON.stringify({error:error.message}));
+              if(isCurrentProvider()) trace.event('tool.error', { attempt, call_id: callId, tool: name, error }, 'warn');
+              if(isCurrentProvider()) newProvider.sendToolResponse(callId,name,JSON.stringify({error:error.message}));
             });
             return;
           }
           if(isInboxToolCall(name,activeBackend,hasDedicatedDeviceToken(macAddress))) {
             const run=createInboxTools({inbox:notificationInbox,deviceId:macAddress,maxChars:inboxToolMaxChars,announcement:inboxAnnouncement});
             run(name,args).then(result=>{
-              if(!sessionClosed) newProvider.sendToolResponse(callId,name,JSON.stringify(result));
-            }).catch(()=>{
-              if(!sessionClosed) newProvider.sendToolResponse(callId,name,JSON.stringify({error:'Notification request invalid or inbox unavailable'}));
+              if(isCurrentProvider()) newProvider.sendToolResponse(callId,name,JSON.stringify(result));
+            }).catch(error=>{
+              if(isCurrentProvider()) trace.event('tool.error', { attempt, call_id: callId, tool: name, error }, 'warn');
+              if(isCurrentProvider()) newProvider.sendToolResponse(callId,name,JSON.stringify({error:'Notification request invalid or inbox unavailable'}));
             });
             return;
           }
@@ -1605,15 +1720,15 @@ wssXiaozhi.on('connection', (ws, req) => {
           if (targetWs) {
               sendMcpRequest(targetWs, 'tools/call', { name, arguments: args })
                   .then(mcpRes => {
-                      if (!provider) return;
+                      if (!isCurrentProvider()) return;
                       const resultText = mcpRes.result?.content?.[0]?.text || JSON.stringify(mcpRes.result || { success: true });
                       logger.info(`[${sessionId}] Tool call ${name} succeeded.`);
-                      provider.sendToolResponse(callId, name, resultText);
+                      newProvider.sendToolResponse(callId, name, resultText);
                   })
                   .catch(e => {
-                      if (!provider) return;
-                      logger.error(`[${sessionId}] Tool call failed: ${e.message}`);
-                      provider.sendToolResponse(callId, name, JSON.stringify({ error: e.message }));
+                      if (!isCurrentProvider()) return;
+                      trace.event('tool.error', { attempt, call_id: callId, tool: name, error: e }, 'error');
+                      newProvider.sendToolResponse(callId, name, JSON.stringify({ error: e.message }));
                   });
           } else {
               logger.warn(`[${sessionId}] Tool ${name} requested but no valid MCP client has it.`);
@@ -1622,30 +1737,76 @@ wssXiaozhi.on('connection', (ws, req) => {
       });
 
       newProvider.on('error', (err) => {
-          if (sessionClosed) return;
-          voiceIdle.start();
+          if (!isCurrentProvider()) return;
+          inboxAnnouncement?.discard();
+          trace.event('provider.error', { attempt, backend: activeBackend, model: config.model, phase: provider === newProvider ? 'ready' : 'setup', error: err }, 'error');
+          if (ws.readyState === WebSocket.OPEN) ws.send(JSON.stringify({ type: 'error', session_id: sessionId, data: err.message }));
+      });
+
+      newProvider.on('close', (details = {}) => {
+          if (!isCurrentProvider()) return;
+          const wasReady = provider === newProvider;
+          trace.event('provider.closed', { attempt, backend: activeBackend, model: config.model, phase: wasReady ? 'ready' : 'setup',
+            code: details.code, reason: details.reason || 'No close reason supplied', was_clean: details.wasClean,
+            attempt_ms: Math.round(performance.now() - attemptStarted), pending_tools: [...pendingToolCalls.keys()],
+            buffered_frames: audioBuffer.length, playback_queue: audioOutputQueue.length, idle: voiceIdle.snapshot() }, 'warn');
+          // A provider failure is independent of speech inactivity. Keep the
+          // device channel open for the configured idle window, including 0.
+          provider = null;
+          connectingProvider = null;
+          providerGeneration++;
+          toolAbort.abort();
           voiceIdle.resume();
           inboxAnnouncement?.discard();
-          logger.error(`[${sessionId}] Provider error:`, err);
-          ws.send(JSON.stringify({ type: 'error', session_id: sessionId, data: err.message }));
-      });
-
-      newProvider.on('close', () => {
-          if (sessionClosed) return;
-          inboxAnnouncement?.discard();
           memoryTurns?.discard();
-          logger.info(`[${sessionId}] Provider session closed`);
-          provider = null;
-          finishVoiceSession('provider_closed');
+          audioBuffer = [];
+          audioOutputQueue = [];
+          ttsTextQueue = [];
+          outputTranscriptionBuffer = '';
+          modelDone = false;
+          if (isSpeaking && ws.readyState === WebSocket.OPEN) {
+              ws.send(JSON.stringify({ type: 'tts', state: 'stop', session_id: sessionId }));
+          }
+          isSpeaking = false;
+          let reason = String(sanitizeLogValue(details.reason || 'No close reason supplied', [...logSecrets, expectedToken])).replace(/[\r\n]/g, ' ');
+          reason = reason.slice(0, 1000);
+          logger.warn(`[${sessionId}] Provider session closed: backend=${activeBackend} model=${config.model} phase=${wasReady ? 'ready' : 'setup'} code=${details.code ?? 'unknown'} reason=${reason}`);
+          const transient = details.retryable !== false && (details.code === undefined || [1000, 1001, 1006, 1011, 1012, 1013].includes(details.code));
+          if (activeBackend === 'gemini' && transient && providerRetries < 1) {
+              providerRetries++;
+              trace.event('provider.retry_scheduled', { attempt, retry: providerRetries, delay_ms: 1000, close_code: details.code });
+              logger.info(`[${sessionId}] Retrying Gemini connection in 1s (1/1)`);
+              providerRetryTimer = setTimeout(() => {
+                  providerRetryTimer = null;
+                  startSession();
+              }, 1000);
+              providerRetryTimer.unref();
+          } else if (ws.readyState === WebSocket.OPEN) {
+              trace.event('provider.retry_skipped', { attempt, reason: transient ? 'retry_limit_or_backend' : 'non_transient_close' }, 'warn');
+              ws.send(JSON.stringify({ type: 'error', session_id: sessionId, data: `AI connection closed (${details.code ?? 'unknown'}): ${reason}` }));
+          }
       });
 
+      trace.event('provider.connect_requested', { attempt, backend: activeBackend, model: config.model, voice: config.voice,
+        tool_count: mcpTools.length, tool_names: mcpTools.map(tool => tool.name),
+        input_transcription: Boolean(config.input_transcription), output_transcription: Boolean(config.output_transcription),
+        prompt_chars: (config.prompt || '').length });
       logger.info(`[${sessionId}] Starting ${activeBackend} session with ${mcpTools.length} tools.`);
       await newProvider.connect(mcpTools);
       if (sessionClosed) newProvider.close();
       
     } catch (err) {
-      logger.error(`[${sessionId}] Failed to connect:`, err);
-      ws.close();
+      trace.event('provider.start_failed', { attempt, error: err, preparation_ms: Math.round(performance.now() - attemptStarted) }, 'error');
+      const failedProvider = provider || connectingProvider;
+      provider = null;
+      connectingProvider = null;
+      providerGeneration++;
+      toolAbort.abort();
+      failedProvider?.close();
+      if (!sessionClosed) {
+        voiceIdle.resume();
+        if (ws.readyState === WebSocket.OPEN) ws.send(JSON.stringify({ type: 'error', session_id: sessionId, data: 'Could not start AI session. Check server logs and configuration.' }));
+      }
     } finally {
       sessionStarting = false;
     }
@@ -1654,6 +1815,8 @@ wssXiaozhi.on('connection', (ws, req) => {
   ws.on('message', (message, isBinary) => {
     if (sessionClosed) return;
     if (isBinary) {
+      metrics.input_packets++;
+      if (metrics.input_packets === 1) trace.event('audio.first_packet', { bytes: message.length, provider_ready: Boolean(provider) });
       decoder.write(message);
     } else {
       try {
@@ -1675,6 +1838,7 @@ wssXiaozhi.on('connection', (ws, req) => {
         }
 
         if (data.type === 'hello') {
+          trace.event('device.hello', { mcp_enabled: Boolean(data.features?.mcp), audio_params: data.audio_params });
           const payload = {
             type: 'hello',
             transport: 'websocket',
@@ -1687,36 +1851,47 @@ wssXiaozhi.on('connection', (ws, req) => {
           if (data.features && data.features.mcp) {
             logger.info(`[${sessionId}] MCP features detected. Waiting for tools...`);
 
-            const mcpWaitPromise = new Promise((resolve) => {
-              const setupPromise = new Promise((innerResolve) => {
-                setTimeout(() => {
-                  logger.info(`[${sessionId}] Initializing MCP for device ${macAddress}`);
-                  setupMcpClient(ws, macAddress, true).catch(e => logger.error(`[MCP] Setup failed for ${macAddress}: ${e.message}`)).finally(innerResolve);
-                }, 1000);
-              });
-
+            // Cancel the losing timeout after successful discovery, and both
+            // timers on teardown. Otherwise a successful setup logs a false 5s timeout.
+            if (cancelMcpDiscovery) return;
+            mcpDiscoveryPending = true;
+            const discoveryStarted = performance.now();
+            trace.event('mcp.discovery_started', { timeout_ms: 5000, initial_delay_ms: 1000 });
+            const mcpWaitPromise = new Promise(resolve => {
+              let timeout = null;
+              let settled = false;
+              const finish = (outcome = 'completed') => {
+                if (settled) return;
+                settled = true;
+                mcpDiscoveryPending = false;
+                clearTimeout(timeout);
+                trace.event('mcp.discovery_finished', { outcome, duration_ms: Math.round(performance.now() - discoveryStarted), tool_count: mcpClients.get(ws)?.tools?.length || 0 }, outcome === 'timeout' ? 'warn' : 'info');
+                resolve();
+              };
+              const setupTimer = setTimeout(() => {
+                if (sessionClosed) return finish('cancelled');
+                logger.info(`[${sessionId}] Initializing MCP for device ${macAddress}`);
+                setupMcpClient(ws, macAddress, true).then(() => finish('completed')).catch(e => {
+                  if (!sessionClosed) trace.event('mcp.discovery_error', { error: e }, 'error');
+                  finish(sessionClosed ? 'cancelled' : 'error');
+                });
+              }, 1000);
+              cancelMcpDiscovery = () => { clearTimeout(setupTimer); finish('cancelled'); };
               const activeBackend = deviceConfig.llm_backend || LLM_BACKEND;
               const qwenModel = deviceConfig.qwen_model || QWEN_MODEL;
               if (activeBackend === 'qwen_realtime' || (activeBackend === 'qwen' && qwenModel.includes('realtime'))) {
-                // Skip tool wait timeout if we're using qwen realtime since it doesn't support them right now
                 logger.info(`[${sessionId}] Skipping tool discovery wait for Qwen Realtime backend.`);
-                resolve();
+                finish('backend_skipped');
               } else {
-                const timeoutPromise = new Promise((innerResolve) => {
-                  setTimeout(() => {
-                    logger.warn(`[${sessionId}] MCP tool discovery timed out after 5s`);
-                    innerResolve();
-                  }, 5000);
-                });
-  
-                Promise.race([setupPromise, timeoutPromise]).finally(resolve);
+                timeout = setTimeout(() => {
+                  if (!sessionClosed) logger.warn(`[${sessionId}] MCP tool discovery timed out after 5s`);
+                  finish(sessionClosed ? 'cancelled' : 'timeout');
+                }, 5000);
               }
             });
-
-            mcpWaitPromise.finally(() => {
-              if (!provider) {
+            mcpWaitPromise.then(() => {
+              if (!sessionClosed && !provider) {
                 logger.info(`[${sessionId}] Proceeding to start LLM session.`);
-                const activeBackend = deviceConfig.llm_backend || LLM_BACKEND;
                 startSession();
               }
             });
@@ -1727,8 +1902,11 @@ wssXiaozhi.on('connection', (ws, req) => {
             }
           }
         } else if (data.type === 'listen' && data.state === 'start' && !provider) {
-          // You can also start gemini session strictly when client sends listen: start
+          trace.event('device.listen_requested', { discovery_pending: mcpDiscoveryPending });
+          // An explicit new listen request can retry after a provider failure.
+          if (!mcpDiscoveryPending) startSession();
         } else if (data.type === 'abort') {
+          trace.event('device.abort', { speaking: isSpeaking, playback_queue: audioOutputQueue.length });
           voiceIdle.release('response');
           voiceIdle.release('playback');
           voiceIdle.activity();
@@ -1749,12 +1927,14 @@ wssXiaozhi.on('connection', (ws, req) => {
           audioOutputQueue = [];
           ttsTextQueue = [];
         }
-      } catch (e) {}
+      } catch (e) { trace.event('device.message_error', { error: e }, 'warn'); }
     }
   });
 
   function finishVoiceSession(reason) {
     if (sessionClosed) return;
+    finishReason = reason;
+    trace.event('session.standby', { reason, idle: voiceIdle.snapshot(), metrics });
     logger.info(`[${sessionId}] Returning device to standby: ${reason}`);
     if (ws.readyState === WebSocket.OPEN) {
       ws.send(JSON.stringify({ type: 'listen', state: 'stop', session_id: sessionId }));
@@ -1768,12 +1948,19 @@ wssXiaozhi.on('connection', (ws, req) => {
     ws.once('close', () => clearTimeout(deadline));
   }
 
-  function invalidateVoiceSession() {
+  function invalidateVoiceSession(reason) {
     if (sessionClosed) return;
+    if (reason) finishReason = reason;
     // Clear/disable invalidates immediately, before the websocket close handshake.
+    trace.event('session.teardown', { reason: finishReason || 'device_disconnected', metrics });
     sessionClosed = true;
+    clearInterval(traceInterval);
     voiceIdle.stop();
-    remoteToolAbort.abort();
+    if (providerRetryTimer) clearTimeout(providerRetryTimer);
+    providerRetryTimer = null;
+    cancelMcpDiscovery?.();
+    providerGeneration++;
+    providerToolAbort?.abort();
     inboxAnnouncement?.discard();
     memoryTurns?.close();
     (provider || connectingProvider)?.close();
@@ -1789,9 +1976,12 @@ wssXiaozhi.on('connection', (ws, req) => {
     encoder.destroy();
   }
   voiceTeardowns.set(ws, invalidateVoiceSession);
-  ws.on('close', () => {
+  ws.on('error', error => trace.event('device.socket_error', { error }, 'error'));
+  ws.on('close', (code, reason) => {
+    trace.event('device.disconnected', { code, reason: reason.toString(), server_reason: finishReason, metrics });
     invalidateVoiceSession();
     voiceTeardowns.delete(ws);
+    voiceTraces.delete(ws);
     activeVoiceSockets.get(macAddress)?.delete(ws);
     if (!activeVoiceSockets.get(macAddress)?.size) activeVoiceSockets.delete(macAddress);
     logger.info(`[${sessionId}] Client disconnected`);
@@ -1802,6 +1992,9 @@ wssXiaozhi.on('connection', (ws, req) => {
 });
 
 server.listen(PORT, HOST, () => {
+  logger.info('Server diagnostics:', { node_version: process.version, pid: process.pid,
+    log_level: logger.level, voice_idle_default_seconds: VOICE_IDLE_TIMEOUT_SECONDS,
+    voice_activity_threshold: VOICE_ACTIVITY_THRESHOLD, session_status_interval_ms: 15000 });
   logger.info(`Parrot Server listening on ${HOST}:${PORT}`);
   logger.info(`Web UI: http://${HOST === '0.0.0.0' ? 'localhost' : HOST}:${PORT}/`);
   logger.info(`MCP Endpoint: ws://${HOST === '0.0.0.0' ? 'localhost' : HOST}:${PORT}/mcp`);
@@ -1816,7 +2009,7 @@ async function shutdown() {
   const deadline = setTimeout(() => process.exit(1), 10000);
   deadline.unref();
   server.close();
-  for (const ws of wssXiaozhi.clients) { voiceTeardowns.get(ws)?.(); ws.terminate(); }
+  for (const ws of wssXiaozhi.clients) { voiceTeardowns.get(ws)?.('server_shutdown'); ws.terminate(); }
   for (const ws of wssMcp.clients) ws.terminate();
   for (const ws of wssMcpEndpoint.clients) ws.terminate();
   await watcher.close();

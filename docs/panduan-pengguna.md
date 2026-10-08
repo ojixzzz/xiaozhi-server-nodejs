@@ -57,6 +57,14 @@ Jika AI/tools berhenti mengirim aktivitas tanpa menyelesaikan respons, jeda
 pelindung berakhir setelah dua menit, lalu hitungan diam dimulai kembali. Batas
 jaringan gateway tetap terpisah dari timeout suara ini.
 
+Jika koneksi Gemini terputus, server tidak langsung mengembalikan perangkat ke
+standby. Gangguan sementara dicoba ulang **sekali setelah 1 detik**; kesalahan
+konfigurasi/izin tidak dicoba ulang otomatis. Hitungan diam tetap mengikuti nilai
+Anda, termasuk `0` untuk mematikannya. Jika AI masih gagal tersambung, perangkat
+belum dapat menjawab; periksa log `Provider session closed` yang kini mencantumkan
+`phase`, `code`, dan `reason`. `phase=setup` berarti konfigurasi sesi belum
+diterima Gemini. Perbaiki konfigurasi sesuai alasannya lalu buka percakapan baru.
+
 ## Membaca notifikasi dari perangkat
 
 Misalnya agent mengirim judul “Laporan sudah selesai” dan isi ringkasan laporan.
@@ -197,6 +205,8 @@ pribadi, terutama pada perangkat yang dipakai bersama.
 
 Bila butuh bantuan, kirim gejala dan pesan error yang sudah disunting agar tidak
 berisi rahasia. Sertakan jenis perangkat dan langkah yang sedang dilakukan.
+Gunakan [panduan menelusuri log](troubleshooting-logs.md) untuk mengambil semua
+kejadian dari satu ID sesi, termasuk error Gemini dan alasan standby.
 Jangan mengirim seluruh `.env`, token, API key, isi inbox pribadi, atau URL audio
 bertanda tangan. Bantuan pemasangan jaringan ada di
 [panduan instalasi](SETUP_ID.md#10-jika-belum-berhasil).

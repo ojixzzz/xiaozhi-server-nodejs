@@ -74,13 +74,24 @@ async function fixture(t, options = {}) {
     const fs = require('node:fs');
     const crypto = require('node:crypto');
     const originalLoad = Module._load;
+    const scriptedCloses = ${JSON.stringify(options.providerCloses || [])};
+    let attempt = 0;
     const record = data => fs.appendFileSync(${JSON.stringify(eventsPath)}, JSON.stringify(data) + '\\n');
     class FakeGemini extends EventEmitter {
       constructor(config) { super(); this.config = config; this.id = crypto.randomUUID(); this.closed = false; this.index = 0; }
       async connect(tools) {
         this.plan = JSON.parse(fs.readFileSync(${JSON.stringify(planPath)}, 'utf8'));
         record({ type: 'connect', session: this.id, prompt: this.config.prompt, tools });
-        this.emit('connected');
+        const close = scriptedCloses[attempt++];
+        if (!close?.beforeReady) this.emit('connected');
+        if (close) setTimeout(() => {
+          this.closed = true;
+          record({ type: 'provider_close', session: this.id, code: close.code });
+          this.emit('close', close);
+          // Late actions from the failed session must be ignored during recovery.
+          this.emit('tool_call', 'late', 'server.update_config', { prompt: 'SHOULD_NOT_RUN' });
+          this.emit('output_transcription', 'late transcript');
+        }, 10);
       }
       sendAudio(pcm) {
         record({ type: 'input_audio', session: this.id, bytes: pcm.length });
@@ -199,6 +210,7 @@ async function fixture(t, options = {}) {
   return {
     base, beforeForward, audioBytes, rows,
     get headers() { return headers; },
+    get output() { return output; },
     async restart() { await stop(); await start(); },
     async request(route, options = {}) {
       const response = await fetch(base + route, { headers, ...options });
@@ -275,6 +287,78 @@ test('speech idle ends voice even with silent Opus traffic, preserving MQTT and 
   assert.equal(sent.status, 201);
   assert.equal(sent.body.stored, true);
   await device.waitForMessage(message => message.type === 'notify');
+});
+
+test('Gemini setup rejection keeps the device open for its idle window without retrying policy errors', { timeout: 30000 }, async t => {
+  const f = await fixture(t, { voiceIdleTimeoutMs: 1500, providerCloses: [{ beforeReady: true, code: 1008, reason: 'Invalid configuration' }] });
+  assert.equal((await f.request(`/api/devices/${MAC}/config`, { method: 'POST', body: JSON.stringify({ voice_idle_timeout_seconds: 60 }) })).status, 200);
+  const config = await f.selectMqtt(MAC, UUID);
+  const device = await f.connect(config);
+  await device.openAudio({ features: {} });
+  await until(async () => (await f.readEvents()).some(event => event.type === 'provider_close'), 'rejected Gemini setup');
+  await delay(300);
+  assert.equal(device.history.some(item => item.payload.type === 'goodbye'), false, 'provider close is not an idle timeout');
+  assert.equal(device.history.some(item => item.payload.type === 'listen' && item.payload.state === 'start'), false);
+  await device.waitForMessage(message => message.type === 'goodbye');
+  assert.equal((await f.readEvents()).filter(event => event.type === 'connect').length, 1, 'policy rejection is not retried');
+  assert.match(f.output, /phase=setup code=1008 reason=Invalid configuration/);
+  assert.match(f.output, /Returning device to standby: silence_timeout/);
+  assert.doesNotMatch(f.output, /Returning device to standby: provider_closed/);
+  const devices = await f.request('/api/devices');
+  assert.equal(devices.body[MAC].prompt, 'Local dashboard inbox test', 'late tool does not change configuration');
+  await device.ping(); assert.equal(await f.online(config), true);
+});
+
+test('transient Gemini failure reconnects once and accepts audio through the existing device session', { timeout: 30000 }, async t => {
+  const f = await fixture(t, { voiceIdleTimeoutMs: 2500, providerCloses: [{ beforeReady: true, code: 1006, reason: 'Connection lost' }] });
+  const config = await f.selectMqtt(MAC, UUID);
+  const device = await f.connect(config);
+  await device.openAudio({ features: {} });
+  await device.waitForMessage(message => message.type === 'listen' && message.state === 'start');
+  const events = await f.readEvents();
+  const attempts = events.filter(event => event.type === 'connect');
+  assert.equal(attempts.length, 2);
+  assert.equal(device.history.some(item => item.payload.type === 'goodbye'), false);
+  await device.sendAudio(audioFrame());
+  await until(async () => (await f.readEvents()).some(event => event.type === 'input_audio' && event.session === attempts[1].session), 'audio reaches recovered Gemini');
+  assert.match(f.output, /Retrying Gemini connection in 1s \(1\/1\)/);
+  await device.waitForMessage(message => message.type === 'goodbye');
+  assert.equal((await f.readEvents()).filter(event => event.type === 'connect').length, 2);
+});
+
+test('failed Gemini retry remains bounded and a disabled idle timeout does not send goodbye', { timeout: 30000 }, async t => {
+  const f = await fixture(t, { providerCloses: [
+    { beforeReady: true, code: 1006, reason: 'Temporary failure' },
+    { beforeReady: true, code: 1006, reason: 'Still unavailable' }
+  ] });
+  assert.equal((await f.request(`/api/devices/${MAC}/config`, { method: 'POST', body: JSON.stringify({ voice_idle_timeout_seconds: 0 }) })).status, 200);
+  const config = await f.selectMqtt(MAC, UUID);
+  const device = await f.connect(config);
+  await device.openAudio({ features: {} });
+  await until(async () => (await f.readEvents()).filter(event => event.type === 'provider_close').length === 2, 'single reconnect exhausted');
+  await delay(1200);
+  assert.equal((await f.readEvents()).filter(event => event.type === 'connect').length, 2);
+  assert.equal(device.history.some(item => item.payload.type === 'goodbye'), false);
+  assert.equal(device.history.some(item => item.payload.type === 'error'), true);
+  device.goodbye();
+  await device.ping();
+});
+
+test('successful device MCP discovery cancels its timeout warning and listen does not bypass discovery', { timeout: 30000 }, async t => {
+  const f = await fixture(t);
+  assert.equal((await f.request(`/api/devices/${MAC}/config`, { method: 'POST', body: JSON.stringify({ voice_idle_timeout_seconds: 0 }) })).status, 200);
+  const config = await f.selectMqtt(MAC, UUID);
+  const device = await f.connect(config);
+  await device.openAudio();
+  device.publish({ type: 'listen', state: 'start' });
+  await delay(200);
+  assert.equal((await f.readEvents()).filter(event => event.type === 'connect').length, 0);
+  await device.waitForMessage(message => message.type === 'listen' && message.state === 'start');
+  await delay(4500);
+  assert.match(f.output, /registered 0 tools/);
+  assert.doesNotMatch(f.output, /MCP tool discovery timed out/);
+  assert.equal((await f.readEvents()).filter(event => event.type === 'connect').length, 1);
+  device.goodbye();
 });
 
 test('calculator-style endpoint connects voice tools and delayed durable inbox without a public agent HTTP server', { timeout: 30000 }, async t => {

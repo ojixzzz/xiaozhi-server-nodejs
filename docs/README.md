@@ -15,6 +15,7 @@ berubah bahasa. Bahasa percakapan mengikuti pengaturan dan permintaan Anda.
 | [Hubungkan agent](remote-mcp.md) / [English](remote-mcp.en.md) | Konfigurasi siap salin dan MCP dua arah | Indonesia / Inggris |
 | [Pasang server](SETUP_ID.md) | Instalasi bertahap, pengaturan perangkat, dan kembali ke konfigurasi lama | Indonesia |
 | [Docker dan penyimpanan](docker.md) | Menjalankan, memakai image GHCR, memperbarui, dan mencadangkan server | Ringkasan Indonesia, referensi Inggris |
+| [Menelusuri log](troubleshooting-logs.md) | Mengambil log, menyaring ID sesi, dan mencari penyebab putus/standby | Indonesia / ringkasan Inggris |
 | [Rekaman beep](../notification-audio/README.md) | Mengganti rekaman dan format audio yang diterima | Ringkasan Indonesia, referensi Inggris |
 
 Jika server sudah bekerja, mulai dari **Panduan pengguna**. Tidak perlu

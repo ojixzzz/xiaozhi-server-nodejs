@@ -101,3 +101,21 @@ test('timeout settings reject invalid values and safely inherit defaults for old
   assert.equal(parseVoiceActivityThreshold('250'), 250);
   for (const value of ['0', '49', '10001', 'NaN']) assert.throws(() => parseVoiceActivityThreshold(value));
 });
+
+
+test('idle trace reports transitions and remaining time without logging every audio frame', () => {
+  const events = [];
+  const f = fixture({ onEvent: (event, data) => events.push({ event, data }) });
+  f.timer.start(); f.advance(15000);
+  assert.equal(f.timer.snapshot().remaining_ms, 45000);
+  f.timer.hold('response');
+  for (let index = 0; index < 20; index++) { f.timer.hold('response'); f.timer.pcm(pcm(0)); }
+  assert.equal(events.filter(item => item.event === 'idle.hold').length, 1);
+  assert.deepEqual(f.timer.snapshot().holds, ['response']);
+  f.advance(120000);
+  assert.ok(events.some(item => item.event === 'idle.hold_expired'));
+  assert.equal(f.timer.snapshot().remaining_ms, 60000);
+  f.advance(60000);
+  assert.deepEqual(events.slice(-2).map(item => item.event), ['idle.timeout', 'idle.stopped']);
+  assert.equal(events.find(item => item.event === 'idle.timeout').data.idle_ms, 60000);
+});
