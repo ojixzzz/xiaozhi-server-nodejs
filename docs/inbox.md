@@ -89,12 +89,33 @@ does not prove delivery to the device.
 4. Save that attempt with `updateBeep()`
 5. List or retrieve the notification only for its authenticated device session
 6. Mark it read only when explicitly requested or acknowledged through the
-   application's separate read action
+   application's completed title-announcement action
 
-`readAt: null` means unread. Listing, retrieving, speaking its contents or changing
-beep status never changes `readAt`. `markRead()` sets it once; repeated calls keep
+`readAt: null` means unread. Ordinary listing, retrieving or changing beep status
+never changes `readAt`. `markRead()` sets it once; repeated calls keep
 the original timestamp. Read notifications remain retrievable until expiry or
 administrator device deletion.
+
+The relay checks unread messages every five seconds and sends at most one reminder
+chime per idle approved MQTT device per `NOTIFY_REMINDER_INTERVAL_MS` (default
+60,000 ms; `0` disables reminders). The device's most recent message creation or
+beep-attempt timestamp determines the next due time, so restarting resumes unread
+reminders without immediately repeating a recent attempt. No schema migration or
+additional inbox message is needed. Expired/read messages stop reminders; active
+voice sessions pause them. Offline and uncertain attempts can be tried again on
+the next interval; a beep still has no physical playback acknowledgment.
+
+In an authenticated Gemini conversation, a greeting such as “halo”, “apa” or
+“ada apa” causes `notifications_announce` to return up to five unread titles,
+without previews or message bodies. Gemini reads the exact titles first and
+offers details. The relay marks only titles found in its output transcription
+after the audio response finishes sending. Empty titles are announced as
+“Notifikasi tanpa judul”. Opening a connection, calling the tool, partial audio,
+an interrupted response or a notification arriving after that batch does not
+acknowledge unseen titles. This is the application's read policy, not proof a
+person physically heard the speaker. Input/output transcription is enabled
+internally for this flow even when dashboard subtitles or memory are disabled.
+Afterward, `notifications_get` can retrieve the full message even if it is read.
 
 Beep status is a separate object:
 

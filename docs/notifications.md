@@ -41,12 +41,16 @@ incoming text. Configure authorized sender tokens/device allowlists as described
 in [hermes-mcp.md](hermes-mcp.md); the sender cannot supply an arbitrary audio URL
 for this text-ingress path.
 
-The Gemini tools are `notifications_list`, `notifications_get` and
+The Gemini tools are `notifications_announce`, `notifications_list`, `notifications_get` and
 `notifications_mark_read`. They use the authenticated device scope and require
 dedicated device authentication; conversation memory may remain disabled. The
 default tool-result bound is 4,000 characters (`INBOX_TOOL_MAX_CHARS`), not a cap
 on the whole Gemini session. Listing/getting/beeping never marks an entry read;
-mark-read requires the current user's explicit request. Text retrieval also works
+explicit mark-read requires the current user's request. After a user greeting or
+notification question, `notifications_announce` returns titles only; the server
+acknowledges titles present in a completed audio response. Details are retrieved
+only when asked. See [read and reminder semantics](inbox.md#lifecycle-and-outcome-semantics).
+Text retrieval also works
 over an ordinary WebSocket conversation, even without MQTT beep support.
 Retrieved text is shared with the configured Gemini provider. When conversation
 memory is enabled, completed discussion of a notification may also be retained
@@ -159,9 +163,10 @@ with `Authorization: Bearer <MQTT_GATEWAY_KEY>`:
 Only `params` is sent to the device. Local request IDs, send deadlines and
 idempotency keys are never added to that firmware message. The bundled gateway's
 `{ "success": true }` reports an MQTT socket write, not receipt, playback or proof
-that anyone heard it. Busy or offline devices need a later deliberate attempt;
-there is no automatic audio retry or offline audio queue. This does not discard
-the separately stored text inbox entry or change its unread/read state.
+that anyone heard it. The text inbox has periodic unread reminders, defaulting to
+one new chime attempt per minute per idle MQTT device. There is no offline audio
+queue; an offline or uncertain attempt may be followed by another reminder later.
+Direct audio-only requests have no automatic retry. Beeps do not change read state.
 
 The official firmware document describes a Redis RPC transport for `xz-mqtt`.
 This repository implements its own authenticated HTTP transport around the same
@@ -225,8 +230,8 @@ it does not provide multi-tenant access isolation.
 - `published`: the adapter received the positive gateway write result
 - `not_published`: the gateway explicitly reported no publication, or the local
   deadline elapsed before forwarding
-- `unknown`: timeout, transport failure or unrecognized response; do not assume
-  it is safe to resend automatically
+- `unknown`: timeout, transport failure or unrecognized response; a later unread
+  reminder is a new attempt and may repeat a beep that already sounded
 
 Every result carries `id`, `reason`, `playback: "unknown"` and `duplicate`.
 Application-side expiry is not a firmware expiry and cannot retract an already
@@ -298,7 +303,9 @@ an existing message with an explicit confirmation and attempt ID; it never
 enqueues another message or changes read state. Same-attempt retries are bounded
 and deduplicated in process for ten minutes, not exactly-once across a restart.
 An unknown earlier attempt may already have sounded, so explicit retry can produce
-another beep. There is no automatic retry or replay.
+another beep. Separately, the unread reminder scheduler creates fresh attempts
+every `NOTIFY_REMINDER_INTERVAL_MS`, pauses during a voice session, and stops
+when the inbox has no unread entries. Set this variable to `0` to disable it.
 
 Administrator routes require login, approved device scope, a strong configured
 admin password and the same-origin JSON header `X-Requested-With: XiaozhiDashboard`

@@ -79,7 +79,11 @@ async function fixture(t) {
       }
       sendAudio(pcm) {
         record({ type: 'input_audio', session: this.id, bytes: pcm.length });
-        if (!this.started && !this.closed) { this.started = true; this.next(); }
+        if (!this.started && !this.closed) {
+          this.started = true;
+          if (this.plan[0]?.name === 'notifications_announce') this.emit('input_transcription', 'halo');
+          this.next();
+        }
       }
       next() {
         if (this.closed) return;
@@ -90,6 +94,12 @@ async function fixture(t) {
       }
       sendToolResponse(id, name, response) {
         record({ type: 'tool_response', session: this.id, id, name, raw: response, data: JSON.parse(response) });
+        if (name === 'notifications_announce') {
+          const titles = (JSON.parse(response).notifications || []).map(item => item.title).join('. ');
+          this.emit('output_transcription', titles + '. Mau detailnya?');
+          this.emit('audio_output', Buffer.alloc(2880));
+          this.emit('turn_complete');
+        }
         queueMicrotask(() => this.next());
       }
       interrupt() {}
@@ -165,6 +175,7 @@ async function fixture(t) {
         MQTT_ENDPOINT: `127.0.0.1:${addresses.mqtt.port}`, MQTT_PUBLIC_HOST: '127.0.0.1',
         MQTT_ALLOW_INSECURE: 'true', MQTT_GATEWAY_URL: gatewayBase,
         NOTIFY_ENABLED: 'true', NOTIFY_ALLOW_HTTP: 'true', NOTIFY_ALLOWED_AUDIO_ORIGINS: base,
+        NOTIFY_REMINDER_INTERVAL_MS: '0', // Isolate ingress/voice assertions from background chimes.
         NOTIFY_AUDIO_BASE_URL: base, NOTIFY_AUDIO_DIR: audioDirectory,
         NOTIFY_SENDERS_JSON: JSON.stringify([{ name: 'hermes', token_env: 'HERMES_NOTIFY_TOKEN', device_ids: [MAC] }]),
         HERMES_NOTIFY_TOKEN: senderToken
@@ -250,6 +261,31 @@ async function fixture(t) {
     async setPlan(script) { await fs.writeFile(planPath, JSON.stringify(script)); }
   };
 }
+
+test('greeting announces only titles, acknowledges the completed response and preserves message details', { timeout: 30000 }, async t => {
+  const f = await fixture(t);
+  const config = await f.selectMqtt(MAC, UUID);
+  const device = await f.connect(config);
+  const sent = await f.send({ device_id: MAC, title: 'Laporan selesai', text: 'PRIVATE_DETAIL_ONLY_ON_REQUEST', idempotency_key: 'title-first' });
+  assert.equal(sent.status, 201);
+  const id = sent.body.notification_id;
+  assert.equal((await f.inbox(MAC, id)).body.readAt, null);
+
+  const session = await f.openScript(device, [{ id: 'titles', name: 'notifications_announce', args: {} }]);
+  assert.ok(session.connected.tools.some(tool => tool.name === 'notifications_announce'));
+  assert.match(session.connected.prompt, /read ONLY their exact titles first/);
+  assert.equal(session.responses[0].data.notifications[0].title, 'Laporan selesai');
+  assert.equal(session.responses[0].raw.includes('PRIVATE_DETAIL_ONLY_ON_REQUEST'), false);
+  await device.waitForMessage(message => message.type === 'tts' && message.state === 'stop');
+  await until(async () => (await f.inbox(MAC, id)).body.readAt !== null, 'completed title response acknowledged');
+  assert.equal((await f.inbox()).body.unreadCount, 0);
+  await f.closeScript(device, session.connected.session);
+
+  const details = await f.openScript(device, [{ id: 'details', name: 'notifications_get', args: { id } }]);
+  assert.equal(details.responses[0].data.notification.text, 'PRIVATE_DETAIL_ONLY_ON_REQUEST');
+  assert.ok(details.responses[0].data.notification.readAt !== null);
+  await f.closeScript(device, details.connected.session);
+});
 
 test('sender text survives beep and restarts, then authenticated Gemini tools retrieve and explicitly acknowledge it', { timeout: 90000 }, async t => {
   const f = await fixture(t);

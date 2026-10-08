@@ -146,8 +146,11 @@ evicting unexpired entries. Configure sender access only with deliberate
 `NOTIFY_SENDERS_JSON` device allowlists and separate operator-supplied bearer
 tokens. An empty sender list disables external ingress.
 It preserves text when a device is offline/busy; there is no offline audio replay
-queue. Listing/getting a notification or playing a beep does not mark it read.
-Mark-read is a separate operation, and clearing conversation memory does not
+queue. Unread messages request a fresh reminder chime every 60 seconds by default
+(`NOTIFY_REMINDER_INTERVAL_MS`; `0` disables it), pausing during voice sessions.
+Ordinary listing/getting or a beep does not mark it read. A greeting in Gemini
+announces titles first; completed title responses acknowledge those messages.
+Clearing conversation memory does not
 clear this separate inbox. Check [inbox.md](inbox.md) for retention and deletion
 semantics before handling sensitive notification content.
 
@@ -241,7 +244,9 @@ runs skip it. DOM simulation is not a visual/browser verification.
 7. Configure a sender token and explicit approved-device allowlist. Submit a
    harmless text notification through the documented HTTP/MCP endpoint, verify
    storage, restart the relay, then ask Gemini “notifnya apa?”. Check that list/get
-   and beep do not mark it read; explicitly mark it read in a separate action.
+   and beep do not mark it read. Say “halo” to announce titles, verify read status
+   after the completed response, then ask for details. Check that aborting a title
+   response leaves it unread and that reminders resume when the device returns idle.
    Repeat text submission while the device is offline and confirm later retrieval
 8. Switch back to WebSocket, reboot/fetch OTA and confirm rollback works before
    expanding the rollout

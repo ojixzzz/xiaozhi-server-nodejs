@@ -218,9 +218,11 @@ Biarkan `NOTIFY_SENDERS_JSON=[]` untuk tahap ini:
    **hasil beep** secara terpisah. Pesan disimpan lebih dulu, meskipun beep gagal
 4. Di **Notification inbox**, gunakan **All messages** atau **Unread only**,
    **Previous page / Next page**, lalu buka pesan untuk membaca detail dan statusnya
-5. Bangunkan perangkat dan tanyakan “notifnya apa?”. Membuka, membacakan atau
-   mendengar beep tidak otomatis menandai pesan read. Klik **Mark read** atau
-   minta Gemini menandai pesan tertentu sudah dibaca hanya ketika Anda memang ingin
+5. Selama unread, beep dicoba lagi tiap 60 detik; percakapan aktif menundanya.
+   Bangunkan perangkat lalu katakan “halo”, “apa”, “ada apa”, atau “notifnya apa?”.
+   Gemini menyebutkan judul dulu dan menawarkan detail. Judul yang disebutkan dalam
+   respons audio selesai ditandai read. Minta detail untuk mendengar isi pesan.
+   Membuka koneksi atau pesan di dashboard dan mendengar beep saja tidak menandai read.
 6. Bila beep terlewat, buka pesan yang sama dan klik **Retry beep only** lalu
    konfirmasi. Ini tidak membuat pesan inbox baru dan tidak mengubah read/unread.
    Jika percobaan sebelumnya berstatus unknown, bunyi ganda tetap mungkin terjadi
@@ -298,20 +300,30 @@ beep gagal, lalu bisa ditanyakan setelah perangkat aktif lagi.
 3. Periksa hasil penyimpanan teks secara terpisah dari hasil pengiriman beep
 4. Dengarkan perangkat: `sample-chime.ogg` hanya nada uji satu detik, bukan ucapan.
    Ini tanda bahwa ada notifikasi; isi teks tidak disuarakan otomatis
-5. Bangunkan perangkat dan tanyakan “notifnya apa?” atau “Ada notifikasi yang
-   belum dibaca?”. Gemini mengambil notifikasi untuk perangkat itu melalui tool
-6. Teks tetap unread setelah beep, list, atau get. Bila sudah selesai, minta secara
-   eksplisit untuk menandai notifikasi yang dimaksud sudah dibaca
+5. Bangunkan perangkat dan katakan “halo”, “apa”, “ada apa”, atau “notifnya apa?”.
+   Gemini mengambil judul notifikasi untuk perangkat itu lalu menawarkan detail.
+   Isi pesan baru diambil bila Anda meminta detail
+6. Beep, list biasa, atau get tetap tidak mengubah read. Judul yang terucap pada
+   respons audio selesai ditandai read dan pengingatnya berhenti. Jika respons
+   dibatalkan, judul belum terucap atau masih ada judul lain, pesan tersebut tetap unread
 7. Untuk memeriksa persistensi, restart relay lalu tanyakan lagi. Uji juga mengirim
    teks ketika perangkat offline, lalu sambungkan kembali dan minta isinya
 
-Tool Gemini bernama `notifications_list`, `notifications_get`, dan
+Tool Gemini bernama `notifications_announce`, `notifications_list`, `notifications_get`, dan
 `notifications_mark_read`. Tool terikat ke perangkat yang terautentikasi; agen
 tidak memilih device ID lain melalui argumennya. Ini memerlukan backend Gemini
 dan token khusus per perangkat. Daftar default hanya menampilkan pesan unread;
 untuk mengecek pesan yang sudah read, mintalah secara jelas agar pesan read juga
 ditampilkan. Pengambilan inbox tetap tersedia melalui percakapan WebSocket;
 MQTT dibutuhkan untuk beep idle, bukan untuk menyimpan teks atau menanyakannya.
+
+Pengingat defaultnya `NOTIFY_REMINDER_INTERVAL_MS=60000` (milidetik). Ubah interval
+di `.env` lalu recreate service relay; `0` mematikan pengingat. Satu perangkat
+mendapat paling banyak satu beep per interval, meskipun memiliki beberapa pesan
+unread. Pengingat pulih dari SQLite setelah restart, berhenti setelah semua pesan
+read atau kedaluwarsa, dan ditunda selama percakapan aktif. Hasil published/unknown
+tidak membuktikan audio terdengar; pengingat berikutnya bisa mengulang beep yang
+sebelumnya sebenarnya sudah berbunyi.
 
 Inbox berada di `DATA_DIR/notifications.sqlite`, terpisah dari `memory.sqlite`.
 Defaultnya menyimpan paling banyak 100 record per perangkat dengan retensi 30

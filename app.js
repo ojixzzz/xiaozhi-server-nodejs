@@ -35,6 +35,8 @@ const { parseDeviceTimezoneOffset, deviceServerTime } = require('./lib/device-ti
 const { NotificationInbox } = require('./lib/inbox');
 const { createNotificationIngress, publicError: notificationPublicError } = require('./lib/notification-ingress');
 const { INBOX_TOOLS, INBOX_INSTRUCTION, canUseInboxTools, isInboxToolCall, createInboxTools } = require('./lib/inbox-tools');
+const { createInboxAnnouncement } = require('./lib/inbox-announcement');
+const { createNotificationReminders } = require('./lib/notification-reminders');
 
 // Configuration
 const GEMINI_API_KEY = process.env.GEMINI_API_KEY;
@@ -334,19 +336,43 @@ const notificationAudio = createAudioService({
 });
 const notificationInbox = new NotificationInbox({databasePath:path.join(DATA_DIR,'notifications.sqlite'),retentionDays:30,maxPerDevice:100});
 const inboxToolMaxChars = boundedMemorySetting('INBOX_TOOL_MAX_CHARS',4000,512,6000);
+const reminderIntervalMs = boundedMemorySetting('NOTIFY_REMINDER_INTERVAL_MS',60000,0,86400000);
+function canSendReminder(deviceId) {
+  const status = notifications.status();
+  return status.enabled && status.configured && devices[deviceId]?.status === 'approved' &&
+    devices[deviceId]?.transport === 'mqtt' && hasDedicatedDeviceToken(deviceId) &&
+    !activeVoiceSockets.get(deviceId)?.size;
+}
+async function sendInboxBeep(deviceId, notification, attempt = {}) {
+  try {
+    const asset = await notificationAudio.issue(process.env.NOTIFY_BEEP_ASSET || 'sample-chime.ogg');
+    if (attempt.reminder) {
+      // Approval, read state or session activity may change while issuing a URL.
+      const current = await notificationInbox.get(deviceId, notification.id);
+      if (!current || current.readAt !== null || !canSendReminder(deviceId)) {
+        return {status:'not_published',reason:'reminder_cancelled',playback:'unknown'};
+      }
+    }
+    // Each deliberate reminder has a fresh key; no notification text enters audio.
+    const idempotencyKey = attempt.attemptId ? `inbox-retry-${notification.id}-${crypto.createHash('sha256').update(attempt.attemptId).digest('hex').slice(0,32)}` : `inbox-${notification.id}`;
+    return await notifications.send(deviceId,{audio_url:asset.audio_url,idempotencyKey});
+  } catch { return {status:'not_published',reason:'beep_unavailable',playback:'unknown'}; }
+}
 const notificationIngress = createNotificationIngress({
   env:process.env,
   inbox:notificationInbox,
   resolveDevice:id=>Object.hasOwn(devices,id) && hasDedicatedDeviceToken(id) ? devices[id] : null,
-  beep:async(deviceId, notification, attempt={})=>{
-    try {
-      const asset=await notificationAudio.issue(process.env.NOTIFY_BEEP_ASSET || 'sample-chime.ogg');
-      // Content never enters the beep payload: no TTS, subtitles, or agent execution.
-      const idempotencyKey=attempt.attemptId ? `inbox-retry-${notification.id}-${crypto.createHash('sha256').update(attempt.attemptId).digest('hex').slice(0,32)}` : `inbox-${notification.id}`;
-      return await notifications.send(deviceId,{audio_url:asset.audio_url,idempotencyKey});
-    } catch {return {status:'not_published',reason:'beep_unavailable',playback:'unknown'};}
-  }
+  beep:sendInboxBeep
 });
+const notificationReminders = createNotificationReminders({
+  inbox:notificationInbox,
+  deviceIds:()=>Object.keys(devices),
+  canSend:canSendReminder,
+  beep:sendInboxBeep,
+  intervalMs:reminderIntervalMs,
+  onError:()=>logger.warn('Notification reminder attempt failed; will check again later.')
+});
+notificationReminders.start();
 app.use(notificationIngress);
 app.use(bodyParser.json({ limit: '32kb' }));
 app.use(session({
@@ -406,7 +432,7 @@ app.get('/api/mqtt/status', requireAuth, (req, res) => {
   res.set('Cache-Control', 'no-store');
   res.json({enabled:mqttConfig.enabled,configured:mqttConfig.configured,reason:mqttConfig.reason,
     notifyAllowHttp:process.env.NOTIFY_ALLOW_HTTP==='true',audioConfigured:notificationAudio.configured,
-    notifications:notifications.status(),inbox:notificationIngress.status(),transport:'bundled-mqtt-gateway-http'});
+    notifications:notifications.status(),inbox:notificationIngress.status(),reminderIntervalMs,transport:'bundled-mqtt-gateway-http'});
 });
 app.post('/api/devices/:mac/transport', requireAuth, featureDevice, (req, res) => {
   if (!req.body || Object.keys(req.body).some(key => key !== 'transport') || !['mqtt','websocket'].includes(req.body.transport)) {
@@ -932,6 +958,7 @@ wssXiaozhi.on('connection', (ws, req) => {
   let connectingProvider = null;
   let sessionStarting = false;
   let sessionClosed = false;
+  let inboxAnnouncement = null;
   let memoryTurns = null;
   let isSpeaking = false;
   let modelDone = false;
@@ -976,7 +1003,10 @@ wssXiaozhi.on('connection', (ws, req) => {
     scheduleAudioSend();
   });
 
-  encoder.on('error', (err) => logger.error(`[${sessionId}] Encoder error:`, err));
+  encoder.on('error', (err) => {
+    inboxAnnouncement?.discard();
+    logger.error(`[${sessionId}] Encoder error:`, err);
+  });
 
   function scheduleAudioSend() {
     if (!audioSendInterval) {
@@ -1001,7 +1031,10 @@ wssXiaozhi.on('connection', (ws, req) => {
 
         if (audioOutputQueue.length > 0) {
           const chunkToSend = audioOutputQueue.shift();
-          if (ws.readyState === WebSocket.OPEN) ws.send(chunkToSend);
+          if (ws.readyState === WebSocket.OPEN) {
+            ws.send(chunkToSend);
+            inboxAnnouncement?.audioSent();
+          }
         } else if ((modelDone || !isSpeaking) && ttsTextQueue.length === 0) {
           if (isSpeaking) {
             isSpeaking = false;
@@ -1011,6 +1044,9 @@ wssXiaozhi.on('connection', (ws, req) => {
           }
           clearInterval(audioSendInterval);
           audioSendInterval = null;
+          if (modelDone && ws.readyState === WebSocket.OPEN) {
+            inboxAnnouncement?.playbackComplete().catch(()=>logger.warn(`[${sessionId}] Notification title acknowledgment failed.`));
+          }
           modelDone = false;
         }
       }, FRAME_DURATION_MS);
@@ -1066,6 +1102,16 @@ wssXiaozhi.on('connection', (ws, req) => {
       if(canUseInboxTools(activeBackend,hasDedicatedDeviceToken(macAddress))) config.prompt=(config.prompt || 'You are a helpful assistant. Keep responses short.')+'\n'+INBOX_INSTRUCTION;
       config.input_transcription = deviceConfig.input_transcription;
       config.output_transcription = deviceConfig.output_transcription;
+      if (canUseInboxTools(activeBackend,hasDedicatedDeviceToken(macAddress))) {
+        // Internal transcripts confirm user speech and exact title announcements,
+        // even when subtitle display and conversation memory are disabled.
+        config.input_transcription = true;
+        config.output_transcription = true;
+        inboxAnnouncement = createInboxAnnouncement({
+          inbox:notificationInbox,deviceId:macAddress,maxChars:inboxToolMaxChars,
+          isActive:()=>!sessionClosed && devices[macAddress]?.status === 'approved' && hasDedicatedDeviceToken(macAddress)
+        });
+      }
       // Memory reads occur only before session setup, never on audio chunks.
       if (activeBackend === 'gemini' && hasDedicatedDeviceToken(macAddress)) {
         try {
@@ -1169,12 +1215,14 @@ wssXiaozhi.on('connection', (ws, req) => {
 
       newProvider.on('input_transcription', (text) => {
           if (sessionClosed) return;
+          inboxAnnouncement?.addInput(text);
           memoryTurns?.addInput(text);
           if (deviceConfig.input_transcription && ws.readyState === WebSocket.OPEN) ws.send(JSON.stringify({ type: 'stt', session_id: sessionId, text }));
       });
 
       newProvider.on('output_transcription', (text) => {
           if (sessionClosed) return;
+          inboxAnnouncement?.addOutput(text);
           memoryTurns?.addOutput(text);
           if (!deviceConfig.output_transcription) return;
           outputTranscriptionBuffer += text;
@@ -1192,6 +1240,7 @@ wssXiaozhi.on('connection', (ws, req) => {
 
       newProvider.on('turn_complete', () => {
           if (sessionClosed) return;
+          inboxAnnouncement?.turnComplete();
           if (memoryTurns) memoryTurns.complete().catch(() => logger.warn(`[${sessionId}] Memory write failed.`));
           if (outputTranscriptionBuffer.length > 0 && deviceConfig.output_transcription) {
               queueTtsText(outputTranscriptionBuffer);
@@ -1202,6 +1251,7 @@ wssXiaozhi.on('connection', (ws, req) => {
 
       newProvider.on('interrupted', () => {
           if (sessionClosed) return;
+          inboxAnnouncement?.discard();
           memoryTurns?.discard();
           outputTranscriptionBuffer = '';
           if (ws.readyState === WebSocket.OPEN) {
@@ -1219,7 +1269,7 @@ wssXiaozhi.on('connection', (ws, req) => {
       newProvider.on('tool_call', (callId, name, args) => {
           if (sessionClosed) return;
           if(isInboxToolCall(name,activeBackend,hasDedicatedDeviceToken(macAddress))) {
-            const run=createInboxTools({inbox:notificationInbox,deviceId:macAddress,maxChars:inboxToolMaxChars});
+            const run=createInboxTools({inbox:notificationInbox,deviceId:macAddress,maxChars:inboxToolMaxChars,announcement:inboxAnnouncement});
             run(name,args).then(result=>{
               if(!sessionClosed) newProvider.sendToolResponse(callId,name,JSON.stringify(result));
             }).catch(()=>{
@@ -1346,11 +1396,13 @@ wssXiaozhi.on('connection', (ws, req) => {
 
       newProvider.on('error', (err) => {
           if (sessionClosed) return;
+          inboxAnnouncement?.discard();
           logger.error(`[${sessionId}] Provider error:`, err);
           ws.send(JSON.stringify({ type: 'error', session_id: sessionId, data: err.message }));
       });
 
       newProvider.on('close', () => {
+          inboxAnnouncement?.discard();
           memoryTurns?.discard();
           logger.info(`[${sessionId}] Provider session closed`);
           provider = null;
@@ -1446,6 +1498,7 @@ wssXiaozhi.on('connection', (ws, req) => {
         } else if (data.type === 'listen' && data.state === 'start' && !provider) {
           // You can also start gemini session strictly when client sends listen: start
         } else if (data.type === 'abort') {
+          inboxAnnouncement?.discard();
           memoryTurns?.discard();
           outputTranscriptionBuffer = '';
           logger.info(`[${sessionId}] Received abort from device. Clearing queues.`);
@@ -1470,6 +1523,7 @@ wssXiaozhi.on('connection', (ws, req) => {
     if (sessionClosed) return;
     // Clear/disable invalidates immediately, before the websocket close handshake.
     sessionClosed = true;
+    inboxAnnouncement?.discard();
     memoryTurns?.close();
     (provider || connectingProvider)?.close();
     provider = null;
@@ -1514,6 +1568,7 @@ async function shutdown() {
   for (const ws of wssXiaozhi.clients) { voiceTeardowns.get(ws)?.(); ws.terminate(); }
   for (const ws of wssMcp.clients) ws.terminate();
   await watcher.close();
+  await notificationReminders.close();
   try { await Promise.all([memoryStore.close(),notificationInbox.close()]); }
   catch { logger.error('Failed to flush memory during shutdown.'); process.exitCode = 1; }
   logger.end();

@@ -681,7 +681,7 @@ async function exerciseUi(t, evaluate, waitUntil) {
         const key = await evaluate(`__requests.filter(r => r.url.endsWith('/beep')).at(-1).body.attempt_id`);
         const before = await evaluate(`__requests.filter(r => r.url.endsWith('/beep')).length`);
         const publications = await evaluate(`__beepPublications`);
-        assert.match(await evaluate(`document.getElementById('inboxDetailBeepStatus').textContent`), /unknown.*No automatic retry/);
+        assert.match(await evaluate(`document.getElementById('inboxDetailBeepStatus').textContent`), /unknown.*Unread messages may receive a later reminder/);
         await evaluate(`closeMemoryNotifyModal(); openMemoryNotifyModal('${A}')`);
         await waitUntil(`!document.getElementById('refreshInboxButton').disabled`);
         await evaluate(`openInboxDetail('${secondId}')`);

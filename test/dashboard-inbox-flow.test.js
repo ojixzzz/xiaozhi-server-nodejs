@@ -166,6 +166,7 @@ async function fixture(t) {
         MQTT_ENDPOINT: `127.0.0.1:${addresses.mqtt.port}`, MQTT_PUBLIC_HOST: '127.0.0.1',
         MQTT_ALLOW_INSECURE: 'true', MQTT_GATEWAY_URL: gatewayBase,
         NOTIFY_ENABLED: 'true', NOTIFY_ALLOW_HTTP: 'true', NOTIFY_ALLOWED_AUDIO_ORIGINS: base,
+        NOTIFY_REMINDER_INTERVAL_MS: '0', // Background reminder cadence is covered separately.
         NOTIFY_AUDIO_BASE_URL: base, NOTIFY_AUDIO_DIR: audioDirectory,
         // Dashboard compose/retry must not require a configured external sender.
         NOTIFY_SENDERS_JSON: '[]'

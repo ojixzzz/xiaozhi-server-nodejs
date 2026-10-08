@@ -247,7 +247,7 @@
 
         <section aria-labelledby="inboxSectionTitle">
             <h4 id="inboxSectionTitle">Notification inbox</h4>
-            <p class="help-text">Saved messages remain here when the device is offline. Opening a message does not mark it read. Message content is not automatically spoken or sent as subtitles; only a short configured beep is requested. Publication does not confirm playback.</p>
+            <p class="help-text">Unread messages request a reminder beep while the device is idle. Greet the device to hear titles first; completed title responses mark those messages read. Ask for details to hear the full message. Opening a message here does not mark it read. Publication does not confirm playback.</p>
             <div class="memory-actions">
                 <label for="inboxFilter">Show</label>
                 <select id="inboxFilter" style="width: auto;">
@@ -1566,7 +1566,7 @@
         } catch (_) {
             attempt.storageMessage = 'No confirmed response was received. Storage is unknown. Refresh the inbox or retry the same message with its existing request ID; a new message could create a duplicate.';
             attempt.storageTone = 'warning';
-            attempt.beepMessage = 'Beep publication and playback are unknown. No automatic retry was made.';
+            attempt.beepMessage = 'Beep publication and playback are unknown. Unread messages may receive a later reminder.';
             attempt.beepTone = 'warning';
         } finally {
             attempt.busy = false;
@@ -1624,7 +1624,7 @@
                 attempt.tone = 'warning';
             }
         } catch (_) {
-            attempt.message = 'No confirmed response was received. Beep publication and playback are unknown. No automatic retry was made; retrying this beep reuses its request ID.';
+            attempt.message = 'No confirmed response was received. Beep publication and playback are unknown. Unread messages may receive a later reminder; retrying this beep reuses its request ID.';
             attempt.tone = 'warning';
         } finally {
             attempt.busy = false;

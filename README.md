@@ -6,9 +6,12 @@ device-scoped SQLite memory, a durable notification inbox for Hermes/other agent
 and a bundled MQTT/UDP gateway while preserving the existing WebSocket path.
 
 The intended flow is: an authorized agent sends **text** through HTTP or MCP →
-the relay stores it → Xiaozhi plays a short beep when possible → the user later
-asks Gemini “notifnya apa?” to hear the stored content. The incoming text is not
-automatically spoken or inserted into conversation memory. The same complete flow
+the relay stores it → Xiaozhi plays a short beep when possible, repeating every
+60 seconds while unread → the user opens a conversation and says “halo”, “apa”,
+or “ada apa” → Gemini reads the titles first and offers details. Titles acknowledged
+in a completed audio response become read; full message text is spoken only when
+the user asks for details. Incoming text is not inserted into conversation memory.
+The same complete flow
 can be tested without Hermes: open **Memory & Notify → Test message & beep**,
 then **Save message & beep**. The dashboard also shows the saved inbox, read status
 and an explicit **Retry beep only** action without creating another message.
@@ -27,8 +30,9 @@ Redis or a separate MQTT broker.
 - A separate persistent SQLite inbox for per-device text notifications, with
   sender authentication, an explicit device allowlist and unread/read state
 - Dashboard inbox with filters/details/read status and a complete **Save message & beep** test, requiring no Hermes or external sender token
-- HTTP and stateless MCP ingress for configured senders; Gemini tools retrieve
-  this device's notifications and mark them read only through an explicit action
+- HTTP and stateless MCP ingress for configured senders; Gemini announces titles
+  after a greeting, acknowledges completed title responses and retrieves details
+- A configurable reminder chime for unread messages, paused during voice sessions
 - MQTT control server with a UDP-to-WebSocket voice bridge in `gateway/`
 - Explicit per-device WebSocket/MQTT selection and signed, approved-device OTA
   configuration; saving a transport does not reboot or flash the device
@@ -54,9 +58,11 @@ when the device is busy/offline or a beep cannot be delivered. See
 
 The immediate beep requires compatible `notify` firmware, an online idle device,
 reachable audio and explicitly selected MQTT transport. `published` means a
-gateway socket write, **not verified playback**. There is no offline audio queue,
-automatic beep retry, automatic notification TTS or reminder scheduler. The chime contains no
-speech; Gemini reads notification text only when the user asks. No live Hermes
+gateway socket write, **not verified playback**. There is no offline audio queue.
+`NOTIFY_REMINDER_INTERVAL_MS=60000` controls periodic unread reminders; set it to
+`0` to disable them. The scheduler recovers from SQLite after restart and can
+repeat an uncertain earlier publication. The chime contains no speech; Gemini
+reads titles after the user greets it and message details only when asked. No live Hermes
 account/agent connection has been configured or tested here.
 
 ## Quick start
