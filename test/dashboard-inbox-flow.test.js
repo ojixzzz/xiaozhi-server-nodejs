@@ -116,6 +116,15 @@ async function fixture(t, options = {}) {
     }
     Module._load = function(request, parent, isMain) {
       if (request === './providers/gemini' && parent?.filename.endsWith('/app.js')) return FakeGemini;
+      if (request === './lib/edge-tts' && parent?.filename.endsWith('/app.js') && ${JSON.stringify(options.fakeScreenTts || false)}) {
+        const actual = originalLoad.apply(this, arguments);
+        const { createAudioService } = originalLoad.call(this, './lib/notification-audio', parent, false);
+        return { ...actual, createEdgeTts: config => {
+          const audio = createAudioService({ ...config, directory: ${JSON.stringify(audioDirectory)} });
+          return { open: audio.open, configured: true, close: async () => {},
+            issue: async () => ({ ...await audio.issue('sample-chime.ogg'), text: 'Screen break fixture announcement' }) };
+        } };
+      }
       if (request === './lib/live-recovery' && parent?.filename.endsWith('/app.js') && ${JSON.stringify(options.fastRecovery || false)}) {
         const actual = originalLoad.apply(this, arguments);
         return { ...actual, LiveRecovery: class extends actual.LiveRecovery {
@@ -218,6 +227,11 @@ async function fixture(t, options = {}) {
 
   return {
     base, beforeForward, audioBytes, rows,
+    forceScreenDue() {
+      const db = new DatabaseSync(databasePath);
+      try { db.exec('PRAGMA busy_timeout=1000'); db.prepare("UPDATE screen_break_settings SET session=json_set(session,'$.next_at',?)").run(Date.now()); }
+      finally { db.close(); }
+    },
     get headers() { return headers; },
     get output() { return output; },
     async restart() { await stop(); await start(); },
@@ -319,6 +333,44 @@ test('internal reminder tools, admin management and all-inbox quiet hours share 
   assert.equal((await f.request(`/api/devices/${MAC}/reminder-settings`)).body.quiet_enabled, true);
   assert.equal((await f.request(`/api/devices/${MAC}/reminders/${reminderId}`)).body.occurrences[0].state, 'completed');
   assert.equal(f.rows().filter(row => row.sender === '@xiaozhi-reminders').length, 1);
+});
+
+test('screen-break voice tools and dashboard send audio once through MQTT, without inbox insertion', { timeout: 30000 }, async t => {
+  const f = await fixture(t,{ fakeScreenTts:true });
+  const config = await f.selectMqtt(MAC,UUID), device = await f.connect(config);
+  const minute = new Date(Date.now()+420*60000).getUTCHours()*60 + new Date(Date.now()+420*60000).getUTCMinutes();
+  const clock = n => { n = (n+1440)%1440; return `${String(Math.floor(n/60)).padStart(2,'0')}:${String(n%60).padStart(2,'0')}`; };
+  const script = await f.openScript(device,[
+    {id:'screen-settings',name:'screen_breaks_settings',args:{action:'update',active_start:clock(minute-60),active_end:clock(minute+120),weekdays:[1,2,3,4,5,6,7]}},
+    {id:'work-start',name:'screen_breaks_session',args:{action:'start'}},
+    {id:'work-start-duplicate',name:'screen_breaks_session',args:{action:'start'}},
+    {id:'agenda',name:'reminders_agenda',args:{days:1}}
+  ]);
+  assert.equal(script.responses[1].data.session.next_at,script.responses[2].data.session.next_at);
+  assert.match(script.connected.prompt,/Edge TTS/); assert.equal(f.rows().length,0);
+  await f.closeScript(device,script.connected.session);
+  f.forceScreenDue(); const played = await device.waitForMessage(payload=>payload.type==='notify');
+  assert.equal(played.payload.subtitles[0].text,'Screen break fixture announcement');
+  assert.equal(f.rows().length,0); assert.equal(f.beforeForward.length,1);
+  const history = await until(async()=> {
+    const result = await f.request(`/api/devices/${MAC}/screen-breaks/history`);
+    return result.body.events?.[0]?.status === 'published' ? result.body : false;
+  },'screen announcement result persisted');
+  assert.equal(history.playback_acknowledgement,false);
+  assert.equal((await f.request(`/api/devices/${SHARED_MAC}/screen-breaks`)).status,403);
+  const noCsrf = {Cookie:f.headers.Cookie,'Content-Type':'application/json'};
+  assert.equal((await f.request(`/api/devices/${MAC}/screen-breaks/command`,{method:'POST',headers:noCsrf,body:'{"action":"stop"}'})).status,403);
+  assert.equal((await f.request(`/api/devices/${MAC}/screen-breaks/command`,{method:'POST',body:'{"action":"stop"}'})).status,200);
+  const created = await f.request(`/api/devices/${MAC}/reminders`,{method:'POST',body:JSON.stringify({title:'Later',schedule:{kind:'once',after_seconds:3600}})});
+  const due = created.body.reminder.next_at;
+  assert.equal((await f.request(`/api/devices/${MAC}/reminders/skip`,{method:'POST',body:JSON.stringify({id:created.body.reminder.id,due_at:due})})).status,200);
+  const localDate = new Date(due+420*60000).toISOString().slice(0,10);
+  assert.equal((await f.request(`/api/devices/${MAC}/reminders/agenda?from=${localDate}&days=1`)).body.agenda[0].state,'skipped');
+  const occurrence = (await f.request(`/api/devices/${MAC}/reminders/${created.body.reminder.id}`)).body.occurrences[0];
+  assert.equal((await f.request(`/api/devices/${OTHER_MAC}/reminders/occurrences/${occurrence.id}/trace`)).status,404);
+  assert.equal((await f.request(`/api/devices/${MAC}/reminders/occurrences/${occurrence.id}/trace`)).body.events[0].event,'skipped');
+  await f.restart(); assert.equal(f.rows().length,0);
+  assert.equal((await f.request(`/api/devices/${MAC}/screen-breaks/history`)).body.events.length,1);
 });
 
 test('speech idle ends voice even with silent Opus traffic, preserving MQTT and inbox notifications', { timeout: 30000 }, async t => {

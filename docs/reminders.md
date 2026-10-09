@@ -72,6 +72,28 @@ ulang. Jeda menahan kejadian baru dan beep pengingat terkait; melanjutkan tidak
 membuat backlog dari waktu selama dijeda. Pembatalan menghentikan kejadian terbuka
 dan mempertahankan riwayat.
 
+## Lewati satu kejadian, agenda, dan jejak pengiriman
+
+Pada **Agenda kalender**, klik tanggal atau pilih rentang hari. Tombol **Lewati
+kali ini** melewati satu kejadian yang tepat; jadwal rutin tetap berjalan.
+Contoh suara: “Lewati pengingat olahraga besok” atau “Apa agenda hari ini?”.
+Jika beberapa kejadian cocok, XiaoZhi meminta pilihan. Pengingat yang dilewati
+sudah tersimpan sebagai riwayat; tidak menambah notif inbox. Melewati kejadian
+terbuka menghentikan beep-nya. Batas 1.000 kejadian mendatang yang dilewati per
+perangkat; retensinya dihitung setelah waktu kejadian tiba.
+
+Agenda memakai zona waktu perangkat dan memuat terjadwal, ditunda, dilewati,
+selesai, serta riwayat yang masih tersimpan. Jadwal yang dijeda tidak diproyeksikan
+ke masa depan. Pilih **Jejak pengiriman** pada agenda/riwayat untuk melihat waktu
+jatuh tempo, penyimpanan, penundaan beep, pengiriman, read dan done. Detail inbox
+juga memuat jejak notif dari agent. “Beep dikirim ke gateway” bukan bukti audio
+terdengar. Status dari versi server lama ditandai `legacy_snapshot`; jejak lama
+yang tidak pernah direkam tidak dibuat-buat. Jejak menyimpan hingga 100 kejadian
+pengiriman terbaru per notif, ditambah kejadian penting penyimpanan/read.
+
+Istirahat layar memiliki panel dan tools tersendiri: **pengumuman Edge TTS sekali,
+tanpa pesan inbox**. Lihat [panduan istirahat layar](screen-breaks.md).
+
 ## Offline, restart, dan batas
 
 Jadwal diperiksa saat startup dan setiap detik. Perangkat offline tetap memiliki
@@ -97,9 +119,11 @@ bukti speaker sudah memutarnya; mekanisme unread mencoba ulang sesuai interval.
 
 Tools internal: `reminders_create`, `reminders_list`, `reminders_get`,
 `reminders_update`, `reminders_cancel`, `reminders_snooze`, `reminders_complete`,
-`reminders_settings`. Identitas perangkat selalu berasal dari sesi suara; tools
+`reminders_settings`, `reminders_agenda`, `reminders_skip`, dan `reminders_trace`.
+Tools istirahat: `screen_breaks_settings` dan `screen_breaks_session`. Identitas perangkat selalu berasal dari sesi suara; tools
 tidak menerima `device_id`. Hasil adalah data tidak tepercaya, bukan instruksi.
 Tool list/get dibatasi 5 item per halaman dan budget hasil inbox yang dikonfigurasi;
+Agenda menerima offset 0–100000; kalender menghitung seluruh interval dalam rentang.
 periksa `has_more` dan `truncated` sebelum mengklaim hasil lengkap.
 
 API admin menggunakan login dashboard dan `X-Requested-With: XiaozhiDashboard`
@@ -112,6 +136,11 @@ untuk perubahan JSON. Semua rute berikut diawali `/api/devices/:mac/`:
 | GET `reminders/occurrences` | Riwayat; filter `reminder_id` opsional |
 | POST `reminders/occurrences/:id/snooze` | `{seconds, request_key}` untuk tunda |
 | POST `reminders/occurrences/:id/complete` | `{confirm:true}` untuk selesai |
+| GET `reminders/agenda` | Agenda; `from` YYYY-MM-DD, `days` 1–42, `limit`, `offset` |
+| GET `reminders/calendar` | Jumlah agenda per hari; `from`, `days` |
+| POST `reminders/skip` | `{occurrence_id}` atau `{id,due_at}` tepat dari agenda |
+| GET `reminders/occurrences/:id/trace` | Jejak satu kejadian |
+| GET `inbox/:id/trace` | Jejak pesan internal/eksternal |
 | GET / PUT `reminder-settings` | Offset default dan jam tenang |
 
 Daftar/riwayat menerima `limit` (1–50), `offset`, serta filter `status` pada daftar
@@ -140,11 +169,11 @@ untuk retry yang hasilnya belum pasti.
 
 ## Pembaruan server
 
-Database `DATA_DIR/notifications.sqlite` dimigrasikan dari versi 1 ke 2 secara
+Database `DATA_DIR/notifications.sqlite` dimigrasikan dari versi 1 atau 2 ke 3 secara
 transaksional. Pesan lama dipertahankan. **Sebelum deployment, hentikan server
 dan cadangkan volume data**, termasuk database/sidecar SQLite. Jangan menyalin
-hanya database utama saat server aktif. Versi server lama menolak schema versi 2;
-rollback ke versi lama membutuhkan pemulihan backup versi 1.
+hanya database utama saat server aktif. Versi server lama menolak schema versi 3;
+rollback membutuhkan pemulihan backup dari sebelum migrasi.
 
 Log `reminder.changed`, `reminder.due`, `reminder.capacity_deferred`, dan
 `reminder.error` memuat ID dan status, tanpa isi pengingat atau token. Tool suara

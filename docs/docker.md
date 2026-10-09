@@ -193,6 +193,16 @@ token query string. See [MCP pipe setup](remote-mcp.en.md).
 
 ## Persistent data and migration
 
+The productivity update migrates inbox schema 1/2 to **3** in one transaction.
+Stop the server and back up the complete data volume before deploying; restore
+that backup when reverting to an older server. Existing inbox messages and
+reminder schedules are retained. Docker includes Edge TTS and FFmpeg for direct
+[screen-break announcements](screen-breaks.en.md); no local installation is
+needed when using the image. The first generation needs internet access to
+Microsoft's speech service. Cached audio is served through the existing
+notification audio origin and gateway origin allowlist.
+
+
 Voice sessions return to standby after 60 seconds without detected speech by
 default. Device **Config → Standby otomatis setelah diam** overrides
 `VOICE_IDLE_TIMEOUT_SECONDS` (0 disables; otherwise 15–3600 seconds).
@@ -221,8 +231,9 @@ The Compose named volume `xiaozhi-data`, mounted at `/app/data`, retains:
 - `devices.json` and `mcp_devices.json`
 - Dashboard sessions and application logs
 - `memory.sqlite` and its adjacent SQLite `-wal`/`-shm` sidecars while active
-- `notifications.sqlite` and its SQLite sidecars: sender-submitted text, unread/
-  read state and inbox records, separate from optional conversation memory
+- `notifications.sqlite` and its SQLite sidecars: text inbox, reminder schedules,
+  skip-once records, delivery timelines and screen-break settings/sessions/history
+- `announcement-audio/`: fixed Edge TTS announcements cached as mono Ogg Opus
 - `remote-mcp-servers.json`: outgoing agent MCP URLs, settings and private Bearer
   credentials configured through **MCP Devices → Add external MCP**; see
   [two-way agent setup](remote-mcp.md)

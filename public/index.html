@@ -322,6 +322,7 @@
                 <p id="inboxDetailMeta" class="help-text"></p>
                 <p id="inboxDetailText"></p>
                 <p id="inboxDetailStatus" class="feature-status" role="status" aria-live="polite"></p>
+                <ol id="inboxDeliveryTrace"></ol>
                 <p id="inboxDetailBeepStatus" class="feature-status" role="status" aria-live="polite"></p>
                 <div class="memory-actions">
                     <button type="button" id="markInboxReadButton" disabled>Mark read</button>
@@ -1785,6 +1786,13 @@
         const attempt = selectedBeepAttempt(session);
         featureStatus('inboxDetailBeepStatus', attempt?.message || inboxBeepText(record.beep), attempt?.tone || '');
         setInboxControls(session);
+        const traceVersion = session.inboxDetailVersion;
+        document.getElementById('inboxDeliveryTrace').replaceChildren();
+        featureRequest(session, `inbox/${encodeURIComponent(record.id)}/trace`).then(({response,data}) => {
+            if (!isCurrentMemorySession(session) || session.inboxDetailVersion !== traceVersion || !response.ok || !Array.isArray(data.events)) return;
+            const target = document.getElementById('inboxDeliveryTrace'); target.replaceChildren();
+            for (const event of data.events) { const item = document.createElement('li'); item.textContent = `${inboxDate(event.at)} · ${event.event}${event.reason ? ' · ' + event.reason : ''}`; target.appendChild(item); }
+        }).catch(() => {});
     }
 
     async function openInboxDetail(id) {
@@ -2100,7 +2108,7 @@
         <form id="reminderSettingsForm" class="reminder-grid">
           <label>Offset zona waktu (menit dari UTC)<input id="reminderDefaultOffset" type="number" min="-720" max="840" required></label>
           <p class="help-text">WIB: 420 · WITA: 480 · WIT: 540. Berlaku untuk jadwal baru; jadwal lama menyimpan zona waktunya sendiri.</p>
-          <label><input id="reminderQuietEnabled" type="checkbox"> Aktifkan jam tenang untuk semua beep inbox</label>
+          <label><input id="reminderQuietEnabled" type="checkbox"> Aktifkan jam tenang untuk beep inbox dan pengumuman istirahat</label>
           <label>Mulai<input id="reminderQuietStart" type="time" value="22:00" required></label>
           <label>Berakhir<input id="reminderQuietEnd" type="time" value="07:00" required></label>
           <button type="submit">Simpan pengaturan</button>
@@ -2141,9 +2149,48 @@
         <div class="reminder-actions"><button type="button" id="reminderHistoryPrevious">Sebelumnya</button><span id="reminderHistoryPage"></span><button type="button" id="reminderHistoryNext">Berikutnya</button></div>
       </section>
     </fieldset>
+    <p id="productivityStatus" role="status" aria-live="polite"></p>
+    <fieldset id="productivityControls">
+      <section aria-label="Agenda kalender">
+        <h4>Agenda kalender</h4>
+        <label>Bulan <input type="month" id="agendaMonth"></label>
+        <div id="agendaCalendar" class="agenda-calendar" aria-label="Kalender pengingat"></div>
+        <p class="help-text">Klik tanggal untuk melihat kejadian hari itu. Kalender mencakup jadwal mendatang dan riwayat yang masih tersimpan; tanggal memakai zona waktu perangkat.</p>
+        <div class="reminder-actions"><label>Mulai <input type="date" id="agendaFrom"></label><select id="agendaDays" aria-label="Rentang agenda"><option value="1">Satu hari</option><option value="7">Tujuh hari</option><option value="31">31 hari</option></select><button type="button" id="agendaLoad">Lihat agenda</button></div>
+        <ul id="agendaList" class="reminder-list"></ul>
+        <div class="reminder-actions"><button type="button" id="agendaPrevious">Sebelumnya</button><span id="agendaPage"></span><button type="button" id="agendaNext">Berikutnya</button></div>
+      </section>
+      <section aria-label="Jejak pengiriman">
+        <h4 id="deliveryTraceTitle">Jejak pengiriman</h4>
+        <p class="help-text">Pilih Jejak pengiriman pada agenda atau riwayat. Gateway menerima perintah belum membuktikan audio terdengar; firmware belum memberi konfirmasi pemutaran.</p>
+        <ol id="deliveryTrace"></ol>
+      </section>
+      <section aria-label="Istirahat layar">
+        <h4>Istirahat layar · Edge TTS</h4>
+        <p class="help-text">Pengumuman suara langsung satu kali, tanpa pesan inbox. Memerlukan MQTT, URL audio yang dapat diakses perangkat, serta internet untuk Edge TTS pertama kali. Jika offline, jam tenang, atau terlambat lebih dari 2 menit, pengumuman dilewati. Sapaan tidak memulai istirahat.</p>
+        <form id="screenForm" class="reminder-grid">
+          <label>Interval kerja (menit)<input id="screenInterval" type="number" min="5" max="240" value="30" required></label>
+          <label>Durasi istirahat (menit)<input id="screenRest" type="number" min="1" max="30" value="2" required></label>
+          <label>Jam aktif mulai<input id="screenStart" type="time" value="08:00" required></label>
+          <label>Jam aktif berakhir<input id="screenEnd" type="time" value="17:00" required></label>
+          <fieldset><legend>Hari aktif (hari mulai jika melewati tengah malam)</legend><div class="reminder-weekdays">
+            <label><input type="checkbox" name="screenWeekday" value="1" checked>Senin</label><label><input type="checkbox" name="screenWeekday" value="2" checked>Selasa</label><label><input type="checkbox" name="screenWeekday" value="3" checked>Rabu</label><label><input type="checkbox" name="screenWeekday" value="4" checked>Kamis</label><label><input type="checkbox" name="screenWeekday" value="5" checked>Jumat</label><label><input type="checkbox" name="screenWeekday" value="6">Sabtu</label><label><input type="checkbox" name="screenWeekday" value="7">Minggu</label>
+          </div></fieldset>
+          <label>Bahasa pengumuman<select id="screenLanguage"><option value="id">Indonesia</option><option value="en">English</option></select></label>
+          <label><input id="screenAuto" type="checkbox"> Mulai otomatis sekali pada setiap rentang jam aktif</label>
+          <button type="submit">Simpan istirahat layar</button>
+        </form>
+        <p id="screenSession" role="status" aria-live="polite"></p>
+        <div class="reminder-actions"><button type="button" id="screenWork">Mulai kerja</button><button type="button" id="screenTakeRest">Mulai istirahat</button><button type="button" id="screenResume">Kembali kerja</button><button type="button" id="screenSnooze">Tunda…</button><button type="button" id="screenSkip">Lewati sekali</button><button type="button" id="screenStop">Selesai kerja</button></div>
+        <p class="help-text">Tanpa respons, pengumuman berikutnya mengikuti interval semula. Jika mulai istirahat, interval berikutnya dihitung setelah jeda selesai. Perubahan pengaturan mengatur ulang interval sesi kerja aktif.</p>
+        <ul id="screenHistory" class="reminder-list"></ul>
+      </section>
+      <button type="button" id="productivityRefresh">Muat ulang agenda &amp; sesi</button>
+    </fieldset>
     <div class="modal-footer"><button type="button" id="reminderClose">Tutup</button></div>
   </div>
 </div>
+<script src="/productivity.js"></script>
 <script src="/reminders.js"></script>
 </body>
 </html>

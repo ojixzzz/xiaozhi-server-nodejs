@@ -32,7 +32,11 @@ their feature support differs. Model availability depends on your provider accou
 - A dashboard for device approval, AI settings, memory, and inbox management.
 - Internal scheduled reminders: daily, weekdays, monthly dates, intervals and
   one-offs, with voice snooze/completion and all-inbox quiet hours. See the
-  [reminder guide](docs/reminders.en.md).
+  [reminder guide](docs/reminders.en.md), including skip-once, calendar agenda
+  and delivery timelines.
+- Screen breaks with direct Edge TTS announcements, configurable intervals and
+  active hours, without inbox messages or repeated announcements. See the
+  [screen break guide](docs/screen-breaks.en.md).
 - Optional memory of completed Gemini turns and administrator-entered notes.
   It starts disabled and is shared by everyone using that device.
 - A persistent text inbox that retains messages even while the device is offline.

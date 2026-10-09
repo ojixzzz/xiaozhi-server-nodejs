@@ -40,6 +40,21 @@ to 30 days while content remains retained; expired content is never recreated.
 Pause holds future occurrences and associated chimes; resume generates no paused
 backlog. Cancel closes open occurrences and retains history.
 
+The **Agenda kalender** panel shows a monthly calendar and paginated date-range
+agenda. Click **Lewati kali ini** for one exact future/open occurrence, preserving
+recurring timing and silencing an open occurrence. Voice can ask for today's,
+tomorrow's or the week's agenda. Ambiguous matching occurrences require a choice.
+Paused schedules are not projected. Future skips are limited to 1,000 per device;
+history is retained until 30 days after the occurrence date.
+
+**Jejak pengiriman** shows due, storage, chime blockers/publication, read, done,
+snooze and skip events. Inbox detail also shows external notification delivery.
+Older stored status is labeled legacy_snapshot; unavailable history is not
+invented. Publication never implies confirmed speaker playback. Timelines keep
+up to 100 recent delivery events per notification plus key storage/read events.
+For direct spoken announcements without inbox messages, see
+[screen breaks with Edge TTS](screen-breaks.en.md).
+
 The scheduler checks at startup and every second. Offline devices retain inbox
 messages. After server downtime, a missed one-off fires; a recurring schedule
 emits only its latest missed occurrence and records the skipped count. Intervals
@@ -52,7 +67,8 @@ units, occurrence history 30 days. A full inbox defers delivery without advancin
 the schedule; marking read does not free capacity. Device deletion removes its
 schedules/settings/history; unapproved devices are not processed.
 
-Voice tools: `reminders_create/list/get/update/cancel/snooze/complete/settings`.
+Voice tools: `reminders_create/list/get/update/cancel/snooze/complete/settings`,
+`reminders_agenda`, `reminders_skip`, `reminders_trace`, plus screen break tools.
 They derive device scope from authentication, return untrusted data and use the
 configured inbox tool budget. Tool list/get pages contain up to 5 records;
 inspect `has_more`/`truncated`. Pause/resume uses update status `paused`/`active`.
@@ -68,6 +84,11 @@ Admin APIs under `/api/devices/:mac/`:
 | GET `reminders/occurrences` | History, optional reminder_id filter |
 | POST `reminders/occurrences/:id/snooze` | seconds and stable request_key |
 | POST `reminders/occurrences/:id/complete` | confirm:true |
+| GET `reminders/agenda` | from YYYY-MM-DD, days 1–42, limit 1–50, offset 0–100000 |
+| GET `reminders/calendar` | Daily counts; from, days |
+| POST `reminders/skip` | occurrence_id OR exact id + due_at from agenda |
+| GET `reminders/occurrences/:id/trace` | Occurrence delivery timeline |
+| GET `inbox/:id/trace` | Internal/external inbox delivery timeline |
 | GET / PUT `reminder-settings` | timezone_offset_minutes, quiet_enabled, quiet_start/end |
 
 Writes require the existing admin session and JSON dashboard header. Cancellation
@@ -77,8 +98,8 @@ accepts title, optional text, schedule and stable request_key. See the
 [Indonesian guide](reminders.md#referensi-api-dan-tools) for schedule fields.
 
 **Deployment:** stop the server and back up its data volume before updating.
-The existing inbox migrates transactionally from schema 1 to 2, preserving old
-messages. Older server versions reject schema 2; rolling back requires restoring
-the schema-1 backup. Do not copy just the SQLite main file while the server runs.
+The existing inbox migrates transactionally from schema 1 or 2 to 3, preserving old
+messages. Older server versions reject schema 3; rolling back requires restoring
+the pre-migration backup. Do not copy just the SQLite main file while the server runs.
 Lifecycle logs carry IDs/status without content or credentials. Regression tests
 are prepared for Node 24 CI and use fake providers rather than live services.

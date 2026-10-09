@@ -1,6 +1,10 @@
 FROM node:24-bookworm-slim
 ENV NODE_ENV=production HOST=0.0.0.0 PORT=3000 DATA_DIR=/app/data
 WORKDIR /app
+RUN apt-get update && apt-get install -y --no-install-recommends python3-venv ffmpeg ca-certificates \
+    && python3 -m venv /opt/edge-tts \
+    && /opt/edge-tts/bin/pip install --no-cache-dir edge-tts==7.2.8 \
+    && rm -rf /var/lib/apt/lists/*
 COPY package*.json ./
 RUN npm ci --omit=dev --ignore-scripts && npm cache clean --force
 COPY --chown=node:node . .

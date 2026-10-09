@@ -66,3 +66,5 @@ penjelasan fiturnya tersedia di panduan Indonesia di atas.
 **“Online” dan “configured” berbeda.** Configured berarti pengaturan server
 lengkap. Online berarti perangkat atau server lain benar-benar tersambung.
 Keduanya belum membuktikan suara terdengar di speaker.
+
+- [Istirahat layar dengan Edge TTS](screen-breaks.md) · [English](screen-breaks.en.md).

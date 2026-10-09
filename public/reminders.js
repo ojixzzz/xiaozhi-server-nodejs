@@ -12,17 +12,19 @@
     const hex = [...bytes].map(value => value.toString(16).padStart(2, '0')).join('');
     return `${hex.slice(0,8)}-${hex.slice(8,12)}-${hex.slice(12,16)}-${hex.slice(16,20)}-${hex.slice(20)}`;
   }
-  const stateLabel = { active: 'Aktif', paused: 'Dijeda', finished: 'Jadwal berakhir', cancelled: 'Dibatalkan', pending: 'Belum selesai', snoozed: 'Ditunda', completed: 'Selesai' };
+  const stateLabel = { active: 'Aktif', paused: 'Dijeda', finished: 'Jadwal berakhir', cancelled: 'Dibatalkan', pending: 'Belum selesai', snoozed: 'Ditunda', completed: 'Selesai', skipped: 'Dilewati' };
   const current = s => session === s;
   const localInput = (at, offset) => at === null ? '' : new Date(at + offset * 60000).toISOString().slice(0, 16);
   const displayTime = (s, at) => at === null ? '-' : localInput(at, s.settings.timezone_offset_minutes).replace('T', ' ');
   function status(s, text) { if (current(s)) $('reminderStatus').textContent = text; }
   function close() {
+    window.XiaozhiProductivity?.close();
     if (session) for (const controller of session.controllers) controller.abort();
     const opener = session?.opener;
     session = null; $('reminderModal').classList.add('hidden'); opener?.focus();
   }
   async function request(s, suffix, method, body) {
+    if (!current(s)) throw Object.assign(new Error('Dialog closed'), { name: 'AbortError' });
     const controller = new AbortController(); s.controllers.add(controller);
     const timeout = setTimeout(() => controller.abort(), 30000);
     try {
@@ -82,10 +84,10 @@
       if (row.status !== 'cancelled') {
         button(buttons, 'Ubah', async s => { const data = await request(s, `reminders/${row.id}`); if (current(s)) edit(s, data.reminder); });
         if (row.status === 'active' || row.status === 'paused') button(buttons, row.status === 'paused' ? 'Lanjutkan' : 'Jeda', async s => {
-          await request(s, `reminders/${row.id}`, 'PATCH', { status: row.status === 'paused' ? 'active' : 'paused', revision: row.revision }); await lists(s); await history(s);
+          await request(s, `reminders/${row.id}`, 'PATCH', { status: row.status === 'paused' ? 'active' : 'paused', revision: row.revision }); await lists(s); await history(s); await window.XiaozhiProductivity?.refresh();
         });
         button(buttons, 'Batalkan', async s => { if (!confirm(`Batalkan pengingat ${row.title} dan kejadian yang masih terbuka?`)) return;
-          await request(s, `reminders/${row.id}`, 'DELETE', { confirm: true }); if (s.editing?.id === row.id) reset(s); await lists(s); await history(s); });
+          await request(s, `reminders/${row.id}`, 'DELETE', { confirm: true }); if (s.editing?.id === row.id) reset(s); await lists(s); await history(s); await window.XiaozhiProductivity?.refresh(); });
       }
       li.appendChild(buttons); $('reminderList').appendChild(li);
     }
@@ -101,17 +103,20 @@
     if (!data.occurrences.length) $('reminderHistory').appendChild(node('li', 'Belum ada kejadian pengingat.'));
     for (const row of data.occurrences) {
       const li = node('li', ''); li.appendChild(node('strong', row.title));
-      li.appendChild(node('p', `${stateLabel[row.state]} · ${row.read_at === null ? 'Belum dibaca' : 'Dibaca'}\nJatuh tempo: ${displayTime(s, row.due_at)}${row.snooze_until ? `\nDitunda sampai: ${displayTime(s, row.snooze_until)}` : ''}${row.completed_at ? `\nSelesai: ${displayTime(s, row.completed_at)}` : ''}${row.skipped_count ? `\n${row.skipped_count} kejadian terdahulu dilewati saat server tidak tersedia.` : ''}`));
+      li.appendChild(node('p', `${stateLabel[row.state]} · ${!row.notification_id ? 'Tanpa pesan inbox' : row.read_at === null ? 'Belum dibaca' : 'Dibaca'}\nJatuh tempo: ${displayTime(s, row.due_at)}${row.snooze_until ? `\nDitunda sampai: ${displayTime(s, row.snooze_until)}` : ''}${row.completed_at ? `\nSelesai: ${displayTime(s, row.completed_at)}` : ''}${row.skipped_count ? `\n${row.skipped_count} kejadian terdahulu dilewati saat server tidak tersedia.` : ''}`));
+      const traceButton = node('button', 'Jejak pengiriman'); traceButton.type = 'button';
+      traceButton.addEventListener('click', () => window.XiaozhiProductivity?.trace(`reminders/occurrences/${row.id}/trace`, row.title)); li.appendChild(traceButton);
       if (['pending','snoozed'].includes(row.state) && row.schedule_status !== 'cancelled') {
         const buttons = node('div', ''); buttons.className = 'reminder-actions';
-        button(buttons, 'Sudah selesai', async s => { await request(s, `reminders/occurrences/${row.id}/complete`, 'POST', { confirm: true }); await history(s); });
+        button(buttons, 'Lewati kali ini', async s => { await request(s, 'reminders/skip', 'POST', { occurrence_id: row.id }); await history(s); await window.XiaozhiProductivity?.refresh(); });
+        button(buttons, 'Sudah selesai', async s => { await request(s, `reminders/occurrences/${row.id}/complete`, 'POST', { confirm: true }); await history(s); await window.XiaozhiProductivity?.refresh(); });
         if (row.notification_id) button(buttons, 'Tunda…', async s => {
           const value = prompt('Ingatkan kembali berapa menit lagi?', '10'); if (value === null) return;
           if (!/^\d+$/.test(value) || Number(value) < 1 || Number(value) > 43200) throw new Error('Isi 1 sampai 43.200 menit.');
           const key = `snooze:${s.mac}:${row.id}:${value}`;
           if (!attempts.has(key)) attempts.set(key, requestId());
           await request(s, `reminders/occurrences/${row.id}/snooze`, 'POST', { seconds: Number(value) * 60, request_key: attempts.get(key) });
-          attempts.delete(key); await history(s);
+          attempts.delete(key); await history(s); await window.XiaozhiProductivity?.refresh();
         });
         li.appendChild(buttons);
       }
@@ -136,7 +141,7 @@
     session = s; $('reminderDevice').textContent = mac; $('reminderModal').classList.remove('hidden');
     $('reminderStatus').textContent = 'Memuat pengingat…'; $('reminderList').replaceChildren(); $('reminderHistory').replaceChildren();
     $('reminderFilter').value = 'all'; reset(s); $('reminderClose').focus();
-    await action(async s => { await reload(s); status(s, 'Siap.'); });
+    await action(async s => { await reload(s); if (current(s)) await window.XiaozhiProductivity?.open(s.mac); status(s, 'Siap.'); });
   }
   function formSchedule() {
       const kind = $('reminderKind').value;
@@ -170,13 +175,13 @@
       }
       if (!current(s)) return;
       status(s, `Tersimpan: ${data.reminder.summary}\nBerikutnya: ${data.reminder.next_local || '-'}`);
-      reset(s); await lists(s); await history(s);
+      reset(s); await lists(s); await history(s); await window.XiaozhiProductivity?.refresh();
     });
   });
   $('reminderSettingsForm').addEventListener('submit', event => { event.preventDefault(); action(async s => {
     await request(s, 'reminder-settings', 'PUT', { timezone_offset_minutes: Number($('reminderDefaultOffset').value), quiet_enabled: $('reminderQuietEnabled').checked,
       quiet_start: $('reminderQuietStart').value, quiet_end: $('reminderQuietEnd').value });
-    await reload(s); status(s, 'Pengaturan tersimpan. Jadwal lama mempertahankan zona waktunya.');
+    await reload(s); await window.XiaozhiProductivity?.refresh(); status(s, 'Pengaturan tersimpan. Jadwal lama mempertahankan zona waktunya.');
   }); });
   $('reminderClose').addEventListener('click', close);
   $('reminderModal').addEventListener('click', event => { if (event.target === $('reminderModal')) close(); });
@@ -192,12 +197,12 @@
   $('reminderKind').addEventListener('change', visibility); $('reminderOnceMode').addEventListener('change', visibility);
   $('reminderNew').addEventListener('click', () => { if (session) { reset(session); $('reminderTitle').focus(); } });
   $('reminderReset').addEventListener('click', () => { if (session) reset(session); });
-  $('reminderRefresh').addEventListener('click', () => action(reload));
+  $('reminderRefresh').addEventListener('click', () => action(async s => { await reload(s); await window.XiaozhiProductivity?.refresh(); }));
   $('reminderFilter').addEventListener('change', () => action(async s => { s.offset = 0; await lists(s); }));
   $('reminderPrevious').addEventListener('click', () => action(async s => { s.offset = Math.max(0, s.offset - pageSize); await lists(s); }));
   $('reminderNext').addEventListener('click', () => action(async s => { s.offset += pageSize; await lists(s); }));
   $('reminderAllHistory').addEventListener('click', () => action(async s => { s.historyReminder = null; s.historyOffset = 0; await history(s); }));
   $('reminderHistoryPrevious').addEventListener('click', () => action(async s => { s.historyOffset = Math.max(0, s.historyOffset - pageSize); await history(s); }));
   $('reminderHistoryNext').addEventListener('click', () => action(async s => { s.historyOffset += pageSize; await history(s); }));
-  window.XiaozhiReminders = { open, close, clear() { close(); attempts.clear(); } };
+  window.XiaozhiReminders = { open, close, refresh: () => action(reload), clear() { close(); attempts.clear(); window.XiaozhiProductivity?.clear(); } };
 })();

@@ -38,6 +38,8 @@ const { createNotificationIngress, publicError: notificationPublicError } = requ
 const { INBOX_TOOLS, INBOX_INSTRUCTION, canUseInboxTools, isInboxToolCall, createInboxTools } = require('./lib/inbox-tools');
 const { createReminderService, mountReminderRoutes } = require('./lib/reminders');
 const { REMINDER_TOOLS, REMINDER_INSTRUCTION, REMINDER_TOOL_NAMES, createReminderTools } = require('./lib/reminder-tools');
+const { createEdgeTts } = require('./lib/edge-tts');
+const { createScreenBreakService } = require('./lib/screen-breaks');
 const { createInboxAnnouncement } = require('./lib/inbox-announcement');
 const { createNotificationReminders } = require('./lib/notification-reminders');
 const { RemoteMcpServers, REMOTE_MCP_INSTRUCTION } = require('./lib/remote-mcp');
@@ -453,6 +455,21 @@ const reminderService = createReminderService({ inbox: notificationInbox, defaul
   beep: sendInboxBeep,
   onEvent: (event, fields) => logger.info('Reminder lifecycle:', { event, ...fields })
 });
+const screenTts = createEdgeTts({ directory: path.join(DATA_DIR, 'announcement-audio'), publicBaseUrl: process.env.NOTIFY_AUDIO_BASE_URL || '',
+  signingKey: mqttConfig.serviceKey || '', allowHttp: process.env.NOTIFY_ALLOW_HTTP === 'true' });
+async function screenDeviceOnline(id) {
+  if (!canSendReminder(id) || !mqttConfig.configured || process.env.NOTIFY_ADAPTER_MODULE) return false;
+  try {
+    const response = await fetch(`${mqttConfig.gatewayUrl}/online?clientId=${encodeURIComponent(devices[id].mqtt_client_id)}`,
+      { headers: { Authorization: `Bearer ${mqttConfig.serviceKey}` }, signal: AbortSignal.timeout(3000), redirect: 'error' });
+    return response.ok && (await response.json()).online === true;
+  } catch { return false; }
+}
+const screenBreaks = createScreenBreakService({ reminders: reminderService, deviceIds: () => Object.keys(devices),
+  allowed: id => devices[id]?.status === 'approved' && hasDedicatedDeviceToken(id),
+  busy: id => Boolean(activeVoiceSockets.get(id)?.size), online: screenDeviceOnline, tts: screenTts,
+  send: (id, payload) => canSendReminder(id) ? notifications.send(id, payload) : { status: 'not_published', reason: 'device_busy' },
+  onEvent: (event, fields) => logger.info('Screen break lifecycle:', { event, ...fields }) });
 const notificationIngress = createNotificationIngress({
   env:process.env,
   inbox:notificationInbox,
@@ -486,6 +503,7 @@ const notificationReminders = createNotificationReminders({
 });
 notificationReminders.start();
 reminderService.start();
+screenBreaks.start();
 app.use(notificationIngress);
 app.use(bodyParser.json({ limit: '32kb' }));
 app.use(session({
@@ -578,11 +596,11 @@ app.post('/api/notification-audio/url',requireAuth,audioAdmin,async(req,res)=>{
   try {res.json(await notificationAudio.issue(req.body.name));}
   catch(error){res.status(error.statusCode||503).json({error:error.message});}
 });
-app.get('/notification-audio/:name',async(req,res)=>{
+for (const [audioPath, audioService] of [['/notification-audio/:name', notificationAudio], ['/announcement-audio/:name', screenTts]]) app.get(audioPath,async(req,res)=>{
   res.set('Cache-Control','private, no-store');
   res.set('X-Content-Type-Options','nosniff');
   try {
-    const asset=await notificationAudio.open({name:req.params.name,expires:req.query.expires,signature:req.query.signature});
+    const asset=await audioService.open({name:req.params.name,expires:req.query.expires,signature:req.query.signature});
     res.set('Content-Type',asset.contentType);res.set('Content-Length',String(asset.size));
     asset.stream.on('error',()=>res.destroy());
     res.on('close',()=>asset.stream.destroy());
@@ -2204,6 +2222,8 @@ async function shutdown() {
   for (const ws of wssMcpEndpoint.clients) ws.terminate();
   await watcher.close();
   await notificationReminders.close();
+  await screenBreaks.close();
+  await screenTts.close();
   await reminderService.close();
   await endpointMcp?.close();
   await remoteMcp?.close();

@@ -134,13 +134,13 @@ test('v1 inbox migrations preserve old text, read state and future settings acro
   const f = fixture(t);
   const { notification } = await f.store.enqueue('a', { sender: 'legacy', title: 'Old', text: 'Keep my text', idempotencyKey: 'legacy' });
   await f.store.markRead('a', notification.id); await f.store.close();
-  f.sql(db => db.exec('DROP TABLE reminder_occurrences; DROP TABLE reminder_schedules; DROP TABLE reminder_settings; PRAGMA user_version=1;'));
+  f.sql(db => db.exec('DROP TABLE notification_events; DROP TABLE screen_break_events; DROP TABLE screen_break_settings; DROP TABLE reminder_skips; DROP TABLE reminder_occurrences; DROP TABLE reminder_schedules; DROP TABLE reminder_settings; PRAGMA user_version=1;'));
   await f.reopen();
   const old = await f.store.get('a', notification.id);
   assert.equal(old.text, 'Keep my text'); assert.ok(old.readAt);
   await f.call('settings_update', { quiet_enabled: true }); await f.store.cleanup();
   assert.equal((await f.call('settings_get')).quiet_enabled, true);
-  assert.equal(f.sql(db => db.prepare('PRAGMA user_version').get().user_version), 2);
+  assert.equal(f.sql(db => db.prepare('PRAGMA user_version').get().user_version), 3);
 });
 
 test('voice tool requests with different call IDs share one action until the user makes another request', async t => {
@@ -155,7 +155,7 @@ test('voice tool requests with different call IDs share one action until the use
   assert.notEqual((await run('reminders_create', args)).reminder.id, a.reminder.id);
   await assert.rejects(run('reminders_create', { ...args, device_id: 'b' }), TypeError);
   approved = false; await assert.rejects(run('reminders_list', {}), TypeError);
-  assert.equal(REMINDER_TOOLS.length, 8);
+  assert.equal(REMINDER_TOOLS.length, 13);
 });
 
 test('schedule limits, revisions and content validation reject writes without altering existing schedules', async t => {

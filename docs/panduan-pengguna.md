@@ -273,3 +273,14 @@ kejadian dari satu ID sesi, termasuk error Gemini dan alasan standby.
 Jangan mengirim seluruh `.env`, token, API key, isi inbox pribadi, atau URL audio
 bertanda tangan. Bantuan pemasangan jaringan ada di
 [panduan instalasi](SETUP_ID.md#10-jika-belum-berhasil).
+
+## Agenda, jejak, dan istirahat layar
+
+Buka **Xiaozhi Devices → Pengingat** untuk melihat kalender dan melewati satu
+kejadian tanpa mengubah jadwal rutin. Pilih **Jejak pengiriman** untuk mengetahui
+apa yang terjadi pada pengingat; detail inbox juga memiliki jejak pesan agent.
+
+Panel **Istirahat layar** mengatur interval kerja, durasi jeda, jam/hari aktif dan
+bahasa. Klik **Mulai kerja**, atau minta melalui suara. Pengumuman Edge TTS
+langsung tidak masuk inbox dan tidak diulang. Default 30 menit kerja / 2 menit
+istirahat; mulai otomatis nonaktif. Lihat [panduan lengkap](screen-breaks.md).

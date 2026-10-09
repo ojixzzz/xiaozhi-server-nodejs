@@ -175,7 +175,7 @@ test('SQLite has separate application/schema identifiers, WAL, constraints, and 
   await store.enqueue('a', message());
   inspect(databasePath, (db) => {
     assert.equal(db.prepare('PRAGMA application_id').get().application_id, 0x58494e42);
-    assert.equal(db.prepare('PRAGMA user_version').get().user_version, 2);
+    assert.equal(db.prepare('PRAGMA user_version').get().user_version, 3);
     assert.equal(db.prepare('PRAGMA journal_mode').get().journal_mode, 'wal');
     assert.equal(db.prepare('PRAGMA integrity_check').get().integrity_check, 'ok');
     assert.deepEqual(db.prepare('PRAGMA foreign_key_check').all(), []);

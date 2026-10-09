@@ -38,7 +38,8 @@ completed production deployment or physical-device playback test.
 - `lib/notifications.js`: destination authorization, payload validation, expiry,
   bounded attempts, idempotency and truthful publication results
 - `lib/notification-audio.js`: administrator-selected local Ogg Opus assets served
-  through expiring signed links; no external-URL fetching or TTS
+  through expiring signed links; no external-URL fetching. Screen break Edge TTS
+  uses its own generated audio cache and signed route
 
 A configured sender submits text through `POST /api/notifications` or the
 stateless MCP endpoint `POST /mcp/notifications`. The application persists it in
@@ -204,8 +205,9 @@ the relay/gateway do not fetch, transcode or proxy it. See
 [audio preparation](../notification-audio/README.md) for the tested sample format
 and optional offline FFmpeg conversion commands.
 
-There is no built-in speech synthesis, reminder scheduler or background task
-runner. A subtitle is display text, not synthesized speech. To hear a spoken
+Internal [reminders](reminders.en.md) have a persistent scheduler, and
+[screen breaks](screen-breaks.en.md) synthesize fixed announcements through Edge TTS.
+A subtitle is display text, not synthesized speech. To hear a spoken
 manual audio notification, provide a recording containing those words. For
 incoming agent notifications, the normal flow is a fixed beep followed by Gemini
 retrieving the saved text when the user asks; no prerecorded speech is needed.
