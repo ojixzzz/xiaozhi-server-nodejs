@@ -139,6 +139,11 @@ Port and mount behavior:
 - `MQTT_BIND_ADDRESS` defaults to `127.0.0.1`; `MQTT_PORT` defaults to 8883 TCP
 - `MQTT_UDP_PORT` defaults to 8884 UDP. The same port is published and advertised;
   changing only an external NAT mapping will break the voice path
+- `MQTT_UDP_SOURCE_POLICY` defaults to `roaming`: UDP may use a different public
+  IP from MQTT and change IP/port during a conversation. `pinned` locks the first
+  UDP endpoint; `strict` additionally requires the MQTT source IP. Changes require
+  recreating the gateway with an image that includes this setting. Compose passes
+  it through the existing `.env` file; no extra port or firmware change is needed.
 - Gateway HTTP port 3001 is not published. The relay calls `http://gateway:3001`
 - The gateway reads the authenticated registry at
   `http://xiaozhi:3000/internal/mqtt/devices/` and connects upstream to
@@ -158,8 +163,11 @@ The two distinct operator-supplied MQTT keys must match across both services.
 For TLS MQTT, the device-facing port must be 8883 for stock firmware, and the
 certificate chain/hostname must be trusted by that firmware. TLS deployment,
 reverse-proxy configuration and certificate trust were not verified on
-physical hardware in the recorded verification run. TCP proxying that changes the device source IP while UDP
-arrives directly is incompatible with this bridge's peer-address matching.
+physical hardware in the recorded verification run. With the optional `strict`
+policy, TCP proxying that changes the device source IP while UDP arrives directly
+is incompatible with peer-address matching. Default `roaming` allows this mismatch
+and follows fresh UDP source mappings, including mid-session changes. This relaxes
+the source-address restriction; it does not add UDP sender authentication.
 The legacy firmware-compatible UDP AES-CTR format is not authenticated
 encryption; MQTT TLS does not secure that separate audio transport. Restrict the
 UDP path to trusted networks/devices and do not treat it as internet-safe merely

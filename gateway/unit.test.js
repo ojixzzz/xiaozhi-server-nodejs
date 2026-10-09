@@ -212,8 +212,8 @@ test('MQTT stop drains adaptive UDP audio, preserves full gap counts and cancels
   assert.equal(timers.size, 0); assert.equal(sent.length, count); assert.equal(f.gateway.sessions.size, 0);
 });
 
-test('UDP ingress reports pre-buffer rejection, missing audio and recovery without relaxing peer checks', async (t) => {
-  const f = await fixture(t); const device = await f.device(); await device.frame(2); device.publish(hello);
+test('strict UDP ingress reports pre-buffer rejection, missing audio and recovery without relaxing peer checks', async (t) => {
+  const f = await fixture(t, {udpSourcePolicy:'strict'}); const device = await f.device(); await device.frame(2); device.publish(hello);
   const reply = await device.message('hello'), session = [...f.gateway.sessions.values()][0], peer = session.peer;
   const events = [], sent = [];
   f.gateway.on('audioStats', event => events.push(event));
@@ -240,7 +240,7 @@ test('UDP ingress reports pre-buffer rejection, missing audio and recovery witho
   f.gateway.receiveUdp(wire(2),{...source,port:54321});
   session.udpRateWindow = Date.now(); session.udpRateCount = 200; f.gateway.receiveUdp(wire(2),source);
   assert.deepEqual(session.ingress,{ingress_datagrams:7,rejected_header:1,rejected_state:1,
-    rejected_source_ip:1,rejected_endpoint:1,rejected_rate:1,rejected_sequence:1});
+    rejected_source_ip:1,rejected_endpoint:1,rejected_rate:1,rejected_sequence:1,peer_changes:0});
   assert.equal(session.jitter.stats.forwarded,1);
   session.lastStatsAt = Date.now()-5001; peer.tick();
   const stats = sent.find(value => value.type === 'audio_transport_stats').stats;
@@ -257,6 +257,96 @@ test('UDP ingress reports pre-buffer rejection, missing audio and recovery witho
   peer.endSession(false);
   const closed = events.find(event => event.event === 'audio.udp_session_closed');
   assert.equal(closed.ingress_datagrams,7); assert.equal(closed.forwarded,1);
+});
+
+test('pinned UDP policy accepts a separate public IP, pins its endpoint and resets binding on a new session', async (t) => {
+  const f = await fixture(t,{udpSourcePolicy:'pinned'}); const device = await f.device(); await device.frame(2); device.publish(hello);
+  const reply = await device.message('hello'), session = [...f.gateway.sessions.values()][0], peer = session.peer;
+  const events = [], forwarded = [];
+  f.gateway.on('audioStats', event => events.push(event));
+  peer.sendUpstream = (data,binary) => { if(binary)forwarded.push(Buffer.from(data)); return true; };
+  const opus = Buffer.from([0xf8,0xff,0xfe]);
+  const wire = (target,sequence) => {
+    const h = header(target.route,opus.length,0,sequence);
+    const cipher = crypto.createCipheriv('aes-128-ctr',target.key,h);
+    return Buffer.concat([h,cipher.update(opus),cipher.final()]);
+  };
+  const source = {address:'203.0.113.25',port:62852};
+  assert.equal(f.gateway.options.udpSourcePolicy,'pinned');
+  // Invalid, unknown-session, pre-ready and stopped audio cannot select a peer.
+  const invalid = wire(session,1); invalid[1]=1; f.gateway.receiveUdp(invalid,source);
+  f.gateway.receiveUdp(Buffer.concat([header(0,1),Buffer.from([0])]),source);
+  f.gateway.receiveUdp(wire(session,0),source);
+  session.ready=false;f.gateway.receiveUdp(wire(session,1),source);session.ready=true;
+  session.inputStopped=true;f.gateway.receiveUdp(wire(session,1),source);session.inputStopped=false;
+  assert.equal(session.remote,null);assert.equal(forwarded.length,0);
+  const oldWire = wire(session,1);
+  f.gateway.receiveUdp(oldWire,source);f.gateway.receiveUdp(wire(session,2),source);
+  assert.deepEqual(session.remote,source);assert.deepEqual(forwarded,[opus,opus]);
+  assert.equal(session.ingress.rejected_source_ip,0);
+  assert.equal(events.filter(event=>event.event==='audio.udp_peer_bound').length,1);
+  for(const other of [{...source,address:'203.0.113.26'},{...source,port:62853},{address:'127.0.0.1',port:62852}]) {
+    f.gateway.receiveUdp(wire(session,3),other);
+  }
+  assert.equal(session.ingress.rejected_endpoint,3);assert.equal(forwarded.length,2);
+  f.gateway.receiveUdp(oldWire,source);assert.equal(session.jitter.stats.duplicates,1);
+  assert.deepEqual(session.remote,source);
+  // Downlink must use the UDP address, not the different MQTT address.
+  const send = f.gateway.udpServer.send, destinations=[];
+  f.gateway.udpServer.send = (data,port,address,callback)=>{destinations.push({port,address});callback();};
+  try { peer.sendAudio(session,opus); } finally { f.gateway.udpServer.send=send; }
+  assert.deepEqual(destinations,[source]);
+  peer.endSession(false);device.publish(hello);await device.message('hello');
+  const next=[...f.gateway.sessions.values()][0];assert.equal(next.remote,null);
+  // Simulate an unknown old route deterministically, even if allocation reused it.
+  const obsolete=Buffer.from(oldWire);obsolete.writeUInt32BE(0,4);f.gateway.receiveUdp(obsolete,source);
+  assert.equal(next.remote,null);
+  const changed={address:'203.0.113.26',port:63000};f.gateway.receiveUdp(wire(next,1),changed);
+  assert.deepEqual(next.remote,changed);assert.equal(next.jitter.stats.forwarded,1);
+  assert.equal(reply.transport,'udp');
+});
+
+test('roaming accepts mid-session IP/port changes and reordered old-source audio without reverting downlink', async t=>{
+  const f=await fixture(t);const device=await f.device();await device.frame(2);device.publish(hello);await device.message('hello');
+  const session=[...f.gateway.sessions.values()][0],peer=session.peer,forwarded=[],events=[];
+  peer.sendUpstream=(data,binary)=>{if(binary)forwarded.push(Buffer.from(data));return true;};
+  f.gateway.on('audioStats',event=>events.push(event));
+  const opus=Buffer.from([0xf8,0xff,0xfe]);
+  const wire=sequence=>{
+    const h=header(session.route,opus.length,0,sequence),cipher=crypto.createCipheriv('aes-128-ctr',session.key,h);
+    return Buffer.concat([h,cipher.update(opus),cipher.final()]);
+  };
+  const a={address:'203.0.113.25',port:62000},b={address:'203.0.113.26',port:63000},c={...b,port:64000};
+  const send=f.gateway.udpServer.send,destinations=[];
+  f.gateway.udpServer.send=(data,port,address,callback)=>{destinations.push({address,port});callback();};
+  try {
+    f.gateway.receiveUdp(wire(1),a);peer.sendAudio(session,opus);
+    session.lastPeerLogAt=Date.now()-5001;
+    f.gateway.receiveUdp(wire(3),b);assert.deepEqual(session.remote,b);peer.sendAudio(session,opus);
+    // Sequence 2 still fills the hole even though it came from the old IP.
+    f.gateway.receiveUdp(wire(2),a);assert.equal(forwarded.length,3);
+    assert.deepEqual(session.remote,b);assert.equal(session.jitter.stats.missing,0);
+    f.gateway.receiveUdp(wire(1),a);assert.deepEqual(session.remote,b);assert.equal(forwarded.length,3);
+    f.gateway.receiveUdp(wire(4),c);assert.deepEqual(session.remote,c);peer.sendAudio(session,opus);
+    assert.deepEqual(destinations,[a,b,c]);assert.equal(forwarded.length,4);
+    assert.equal(session.ingress.peer_changes,2);assert.equal(session.ingress.rejected_source_ip,0);
+    assert.equal(session.ingress.rejected_endpoint,0);assert.equal(session.endpointSequence,4);
+    assert.equal(events.filter(event=>event.event==='audio.udp_peer_changed').length,1);
+    // Header/sequence checks and listen.stop still apply before endpoint changes.
+    const invalid=wire(5);invalid[1]=1;f.gateway.receiveUdp(invalid,a);
+    f.gateway.receiveUdp(wire(0),a);session.inputStopped=true;f.gateway.receiveUdp(wire(5),a);
+    assert.deepEqual(session.remote,c);assert.equal(forwarded.length,4);
+  } finally { f.gateway.udpServer.send=send; }
+});
+
+test('UDP source policy defaults to roaming, permits explicit strict/pinned and rejects unknown settings',()=>{
+  const base={signatureKey,serviceKey,allowInsecure:true,registryUrl:'http://localhost/devices/',upstreamUrl:'ws://localhost/voice'};
+  assert.equal(configFromEnv({}).udpSourcePolicy,'roaming');
+  assert.equal(configFromEnv({MQTT_UDP_SOURCE_POLICY:'strict'}).udpSourcePolicy,'strict');
+  assert.equal(createGateway(base).options.udpSourcePolicy,'roaming');
+  assert.equal(createGateway({...base,udpSourcePolicy:'pinned'}).options.udpSourcePolicy,'pinned');
+  assert.equal(createGateway({...base,udpSourcePolicy:'strict'}).options.udpSourcePolicy,'strict');
+  for(const udpSourcePolicy of ['off','any',true,null]) assert.throws(()=>createGateway({...base,udpSourcePolicy}),/MQTT_UDP_SOURCE_POLICY/);
 });
 
 test('malformed remaining length, oversized frame, wrong topic and stalled handshake close cleanly', async (t) => {

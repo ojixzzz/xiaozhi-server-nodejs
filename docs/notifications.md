@@ -87,8 +87,14 @@ general-purpose MQTT broker or a retained-message queue.
 Its firmware-compatible UDP AES-CTR format lacks authenticated integrity and
 depends on firmware nonce behavior for confidentiality. MQTT TLS covers the
 control connection, not UDP; keep the audio path on trusted networks with
-appropriate access restrictions. TCP and UDP source addresses must remain
-consistent for the gateway's peer matching.
+appropriate access restrictions. `MQTT_UDP_SOURCE_POLICY=roaming` is now the
+default: TCP and UDP public IPs may differ, and the UDP address/port may change
+mid-session. Downlink follows the source of the highest accepted sequence;
+reordered older audio can still fill a hole without reverting that destination.
+Use `pinned` to lock the first UDP endpoint, or `strict` to additionally require
+its IP to match MQTT. Roaming removes the previous source-IP safeguard; a route
+ID, sequence number and successful AES-CTR decryption do not authenticate a UDP
+sender. See [changing UDP addresses](troubleshooting-logs.md#ip-mqtt-dan-udp-berbeda-atau-berubah).
 
 ## Device provisioning and authentication
 
@@ -129,6 +135,7 @@ MQTT_REGISTRY_URL=http://xiaozhi:3000/internal/mqtt/devices/
 MQTT_UPSTREAM_URL=ws://xiaozhi:3000/xiaozhi/v1/
 MQTT_PORT=8883
 MQTT_UDP_PORT=8884
+MQTT_UDP_SOURCE_POLICY=roaming
 MQTT_ALLOW_INSECURE=false
 MQTT_TLS_CERT_FILE=/run/mqtt-tls/fullchain.pem
 MQTT_TLS_KEY_FILE=/run/mqtt-tls/privkey.pem

@@ -42,6 +42,7 @@ class Gateway extends EventEmitter {
     super();
     this.options = {
       mqttHost: '127.0.0.1', mqttPort: 8883, udpHost: '0.0.0.0', udpPort: 8884,
+      udpSourcePolicy: 'roaming',
       httpHost: '127.0.0.1', httpPort: 3001, publicHost: '127.0.0.1',
       registryTimeout: 5000, handshakeTimeout: 7000, connectTimeout: 10000,
       fragmentTimeout: 10000, maxPacket: 16384, maxConnections: 256,
@@ -50,6 +51,7 @@ class Gateway extends EventEmitter {
       maxHttpRequests: 64, audioAllowedOrigins: [], allowHttpAudio: false, allowInsecure: false, ...options
     };
     const o = this.options;
+    if (!['strict', 'pinned', 'roaming'].includes(o.udpSourcePolicy)) throw new Error('MQTT_UDP_SOURCE_POLICY must be strict, pinned or roaming');
     secret(o.signatureKey, 'MQTT_SIGNATURE_KEY'); secret(o.serviceKey, 'MQTT_GATEWAY_KEY');
     if (!o.tls && o.allowInsecure !== true) throw new Error('MQTT requires TLS; use MQTT_ALLOW_INSECURE=true only on a trusted local network');
     if (equalSecret(o.signatureKey, o.serviceKey)) throw new Error('Use different MQTT signature and gateway keys');
@@ -185,21 +187,40 @@ class Gateway extends EventEmitter {
     }
     if (!session) { this.udpIngress.unknown_route++; return; }
     if (!session.ready || session.peer.stream.closed || session.peer.session !== session) { session.ingress.rejected_state++; return; }
-    if (ip(info.address) !== ip(session.peer.socket.remoteAddress)) {
+    if (this.options.udpSourcePolicy === 'strict' && ip(info.address) !== ip(session.peer.socket.remoteAddress)) {
       session.ingress.rejected_source_ip++; session.lastRejectedSource = { address: info.address, port: info.port }; return;
     }
-    if (session.remote && (session.remote.address !== info.address || session.remote.port !== info.port)) {
+    const sequence = message.readUInt32BE(12);
+    const peerChanged = session.remote && (session.remote.address !== info.address || session.remote.port !== info.port);
+    if (peerChanged && this.options.udpSourcePolicy !== 'roaming') {
       session.ingress.rejected_endpoint++; session.lastRejectedSource = { address: info.address, port: info.port }; return;
     }
     if (Date.now() - session.udpRateWindow >= 1000) { session.udpRateWindow = Date.now(); session.udpRateCount = 0; }
     if (++session.udpRateCount > 200) { session.ingress.rejected_rate++; return; }
-    const sequence = message.readUInt32BE(12);
     if (session.inputStopped) { session.jitter.stats.after_stop++; return; }
     if (!sequence) { session.ingress.rejected_sequence++; return; }
     const cipher = crypto.createDecipheriv('aes-128-ctr', session.key, message.subarray(0, 16));
     const opus = Buffer.concat([cipher.update(message.subarray(16)), cipher.final()]);
     if (!session.jitter.push(sequence, opus) || session.peer.session !== session) return;
-    session.remote = {address: info.address, port: info.port}; session.lastActivity = Date.now();
+    // Reordered audio from a previous mapping can fill a pending hole, but only
+    // a newer sequence may select the endpoint for subsequent downlink audio.
+    const movePeer = !session.remote || peerChanged && sequence > session.endpointSequence;
+    session.endpointSequence = Math.max(session.endpointSequence, sequence);
+    if (movePeer) {
+      // Legacy UDP has no authentication tag. Route/sequence checks and AES-CTR
+      // decryption are not proof of sender identity. Roaming is a compatibility
+      // tradeoff for networks whose public UDP address changes during a session.
+      session.remote = {address: info.address, port: info.port};
+      if (peerChanged) session.ingress.peer_changes++;
+      if (!peerChanged || Date.now() - session.lastPeerLogAt >= 5000) {
+        session.lastPeerLogAt = Date.now();
+        this.emit('audioStats', { event: peerChanged ? 'audio.udp_peer_changed' : 'audio.udp_peer_bound',
+          device_id: session.peer.identity.deviceId, session_id: session.sessionId,
+          udp_source_policy: this.options.udpSourcePolicy, peer_changes: session.ingress.peer_changes,
+          mqtt_peer: ip(session.peer.socket.remoteAddress), udp_peer: session.remote });
+      }
+    }
+    session.lastActivity = Date.now();
     const queued = session.audioQueue.splice(0);
     for (const queuedPacket of queued) session.peer.sendAudio(session, queuedPacket);
   }
@@ -308,11 +329,11 @@ class Peer {
     }
     this.endSession(false);
     const session = {peer: this, route: this.server.allocateRoute(), key: crypto.randomBytes(16), remote: null,
-      localSequence: 0, remoteSequence: 0, timestamp: 0, ready: false, controlReady: false, audioQueue: [], controlQueue: [],
+      localSequence: 0, remoteSequence: 0, endpointSequence: 0, timestamp: 0, ready: false, controlReady: false, audioQueue: [], controlQueue: [],
       createdAt: Date.now(), lastActivity: Date.now(), udpRateWindow: Date.now(), udpRateCount: 0, pendingUdp: 0};
     this.session = session; this.server.sessions.set(session.route, session);
     session.ingress = { ingress_datagrams: 0, rejected_header: 0, rejected_state: 0,
-      rejected_source_ip: 0, rejected_endpoint: 0, rejected_rate: 0, rejected_sequence: 0 };
+      rejected_source_ip: 0, rejected_endpoint: 0, rejected_rate: 0, rejected_sequence: 0, peer_changes: 0 };
     session.inputDuration = hello.audio_params.frame_duration;
     session.lastStatsAt = Date.now();
     session.jitter = new UdpJitterBuffer({
@@ -435,6 +456,7 @@ class Peer {
         device_id: this.identity.deviceId, session_id: session.sessionId,
         no_audio_ms: now - session.inputWatch.since, ...audioStats(session),
         advertised_host: o.publicHost, advertised_port: this.server.address().udp?.port,
+        udp_source_policy: o.udpSourcePolicy,
         mqtt_peer: ip(this.socket.remoteAddress), udp_peer: session.remote,
         last_rejected_source: session.lastRejectedSource || null
       });
@@ -455,6 +477,7 @@ function configFromEnv(env = process.env) {
     upstreamUrl: env.MQTT_UPSTREAM_URL || 'ws://127.0.0.1:3000/xiaozhi/v1/',
     mqttHost: env.MQTT_BIND_HOST || '127.0.0.1', mqttPort: port('MQTT_PORT', 8883),
     udpHost: env.MQTT_UDP_BIND_HOST || env.UDP_HOST || '0.0.0.0', udpPort: port('MQTT_UDP_PORT', port('UDP_PORT', 8884)),
+    udpSourcePolicy: env.MQTT_UDP_SOURCE_POLICY || 'roaming',
     publicHost: env.MQTT_PUBLIC_HOST || env.PUBLIC_IP || (env.MQTT_ENDPOINT ? env.MQTT_ENDPOINT.split(':')[0] : '127.0.0.1'),
     httpHost: env.MQTT_HTTP_BIND_HOST || env.HTTP_HOST || '127.0.0.1', httpPort: port('MQTT_HTTP_PORT', port('HTTP_PORT', 3001)),
     allowInsecure: env.MQTT_ALLOW_INSECURE === 'true', allowHttpAudio: env.NOTIFY_ALLOW_HTTP === 'true',
@@ -476,7 +499,7 @@ if (require.main === module) {
   if (gateway) {
     gateway.on('serverError', () => { console.error('Gateway listener failed'); void gateway.close().finally(() => { process.exitCode = 1; }); });
     gateway.on('audioStats', stats => console[stats.level === 'warn' ? 'warn' : 'info'](`Gateway audio stats: ${JSON.stringify(stats)}`));
-    gateway.start().then((addresses) => console.log(`MQTT gateway listening on ${addresses.mqtt.address}:${addresses.mqtt.port}; UDP ${addresses.udp.port}; private HTTP ${addresses.http.address}:${addresses.http.port}`))
+    gateway.start().then((addresses) => console.log(`MQTT gateway listening on ${addresses.mqtt.address}:${addresses.mqtt.port}; UDP ${addresses.udp.port}; UDP source policy ${gateway.options.udpSourcePolicy}; private HTTP ${addresses.http.address}:${addresses.http.port}`))
       .catch(() => { console.error('Gateway startup failed'); process.exitCode = 1; });
     for (const signal of ['SIGINT', 'SIGTERM']) process.once(signal, () => { void gateway.close(); });
   }

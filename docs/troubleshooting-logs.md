@@ -94,6 +94,7 @@ dengan log jadwal dan pengiriman di agent; lihat
 | `audio.input_gap` | Detail setiap celah, hanya pada `LOG_LEVEL=debug`; jumlah frame terlambat melewati batas tunggu dan frame yang diganti keheningan |
 | `audio.udp_input_stalled` / `audio.udp_input_resumed` (gateway) | Belum ada audio diteruskan dalam 5 detik setelah `listen.start` / audio pertama akhirnya diteruskan |
 | `audio.udp_unmatched` (gateway) | Ringkasan paket UDP dengan header tidak valid atau rute sesi tidak dikenal; mencakup seluruh gateway |
+| `audio.udp_peer_bound` / `audio.udp_peer_changed` (gateway) | Alamat UDP pertama / perubahan tujuan balasan; perubahan diringkas maksimal satu log per 5 detik, total pada `peer_changes` |
 | `audio.downlink_blocked` / `audio.downlink_recovered` | Antrean WebSocket keluar penuh lalu pulih; audio tidak terus ditambahkan ke socket yang macet |
 | `audio.downlink_overflow` | Antrean suara mencapai batas; sesi ditutup dengan alasan `audio_backpressure` |
 | `audio.first_packet` / `audio.activity_detected` | Audio perangkat masuk / energi audio melewati ambang adaptif; bukan bukti ucapan berhasil dipahami. Versi lama memakai nama `audio.speech_detected` |
@@ -143,10 +144,11 @@ hening saat perangkat sedang memutar jawaban tidak dianggap gangguan baru.
 | `ingress_datagrams` | Datagram dengan ID rute sesi ini, dihitung sebelum validasi; ID ini belum membuktikan keaslian paket |
 | `rejected_header` | Panjang, tipe, flags, atau panjang payload tidak sesuai format gateway |
 | `rejected_state` | Sesi belum siap atau sudah tidak aktif |
-| `rejected_source_ip` | IP sumber UDP berbeda dari IP koneksi MQTT |
-| `rejected_endpoint` | Alamat/port UDP berubah setelah endpoint pertama dikenali |
+| `rejected_source_ip` | IP sumber UDP berbeda dari IP koneksi MQTT pada mode `strict` |
+| `rejected_endpoint` | Alamat/port UDP berubah pada mode `strict` atau `pinned` |
 | `rejected_rate` | Laju melewati batas 200 datagram per detik per sesi |
 | `rejected_sequence` | Nomor urutan nol, sebelum audio masuk buffer |
+| `peer_changes` | Jumlah perubahan tujuan audio balasan pada mode `roaming` |
 
 Counter juga tersedia di `audio.udp_session_closed` dan `audio.input_summary`.
 Paket terlalu pendek untuk dibaca ID rutenya atau memakai rute yang tidak dikenal
@@ -175,8 +177,47 @@ Untuk perangkat yang mengakses IP VPS langsung:
    Paket terlihat pada VPS tetapi tidak pada gateway mengarahkan pemeriksaan ke
    firewall host dan pemetaan Docker. Satu paket dapat tampil pada beberapa
    interface; jangan menyamakan jumlah baris dengan jumlah audio.
-4. Jika counter penolakan bertambah, gunakan alasan spesifiknya. Jangan
-   menonaktifkan pemeriksaan alamat sumber untuk menutupi ketidakcocokan rute.
+4. Jika counter penolakan bertambah, gunakan alasan spesifiknya. Untuk penolakan
+   karena IP TCP dan UDP berbeda, baca pengaturan berikut.
+
+## IP MQTT dan UDP berbeda atau berubah
+
+Jika `ingress_datagrams` terus naik tetapi seluruhnya masuk `rejected_source_ip`,
+audio sudah sampai ke gateway dan ditolak pemeriksaan kesamaan IP. Contohnya,
+koneksi MQTT terlihat dari `203.0.113.10` sedangkan UDP datang dari
+`203.0.113.11`. Ini bisa terjadi pada jalur NAT atau jaringan dengan beberapa
+alamat keluar; log tersebut sendiri tidak menentukan jenis jaringan ISP.
+Menaikkan buffer atau membuka ulang port tidak mengatasi penolakan ini.
+
+Gateway sekarang menggunakan **`roaming` sebagai bawaan**, sesuai kebutuhan
+jaringan yang alamatnya berubah:
+
+```dotenv
+MQTT_UDP_SOURCE_POLICY=roaming
+```
+
+- IP MQTT dan UDP boleh berbeda.
+- IP **dan port** UDP boleh berganti selama percakapan berlangsung.
+- Balasan dikirim ke sumber paket dengan nomor urutan tertinggi yang diterima.
+- Audio dari alamat lama yang datang terlambat tetap boleh mengisi celah buffer;
+  paket itu tidak mengembalikan tujuan balasan ke alamat lama.
+- Paket duplikat, nomor urutan nol, format salah, atau sesi tidak aktif tetap
+  ditangani seperti sebelumnya. Sesi baru mendapatkan kunci dan rute baru.
+
+`pinned` tersedia untuk mengunci alamat/port UDP pertama selama satu sesi.
+`strict` menambahkan syarat IP UDP sama dengan MQTT, seperti perilaku lama.
+Pilihan selain `roaming`, `pinned`, atau `strict` membuat gateway menolak startup.
+Mode roaming melonggarkan pembatasan alamat sumber: protokol UDP lama tidak
+memiliki authentication tag, sehingga ID rute dan dekripsi AES bukan bukti
+identitas pengirim.
+
+Gunakan image gateway yang memuat perubahan ini. Jika variabel belum ada,
+bawaan baru langsung berlaku. Jika `.env` sudah menetapkan `strict` atau `pinned`,
+ubah menjadi `roaming`, lalu buat ulang container gateway sesuai metode
+deployment Anda. Startup harus menampilkan `UDP source policy roaming`.
+Perubahan tidak perlu flashing firmware. Setelah pembaruan, buka percakapan
+baru dan periksa `audio.udp_peer_bound`, `input_packets`, dan `pcm_frames`.
+Perubahan alamat berikutnya dihitung pada `peer_changes`.
 
 ## Koneksi audio MQTT/UDP tidak stabil
 
@@ -336,7 +377,16 @@ and peer addresses. A subsequent first packet logs `audio.udp_input_resumed`.
 The watch ends after that packet or `listen.stop`; it does not treat later DTX
 or playback silence as a failure. `audio.udp_unmatched` aggregates malformed or
 unknown-route traffic gateway-wide every five seconds when counters change.
-These diagnostics preserve the existing peer checks and do not prove playback.
+These diagnostics report the selected peer policy and do not prove playback.
+The default UDP source policy is now `roaming`: MQTT and UDP IPs can differ and
+UDP IP/port changes are allowed mid-session. Downlink follows the highest accepted
+sequence's source; delayed older packets can fill reorder holes without changing
+that destination. `MQTT_UDP_SOURCE_POLICY=pinned` locks the first endpoint;
+`strict` also enforces MQTT/UDP IP equality. Roaming removes that source-address
+restriction; legacy AES-CTR UDP still has no sender authentication. Startup shows
+the selected policy; `audio.udp_peer_bound`, `audio.udp_peer_changed` and
+`peer_changes` expose actual destination changes. Recreate the gateway on the
+updated image; no firmware modification is required for this policy.
 An `Unknown name "uniqueItems"` setup rejection means a tool's JSON Schema was
 sent through Gemini's restricted `parameters` field. The server now uses
 `parametersJsonSchema`, preserving the original tool constraints. Update the

@@ -79,11 +79,20 @@ never flushed as a burst after reconnect. `listen.stop` or a 1.2-second input
 gap sends `audioStreamEnd` after the buffered input. End-of-turn output tails
 are padded to a complete Opus frame and partial output is discarded on abort.
 
-The MQTT gateway holds out-of-order UDP packets for up to 120 ms (32 packets
-maximum), suppresses duplicates, and reports missing sequences. Short gaps are
+The MQTT gateway uses an adaptive 120–360 ms reorder deadline (48 pending packets
+before capacity flushing), suppresses duplicates, and reports missing sequences. Short gaps are
 represented by at most five silent input frames, not reconstructed speech or
-Opus FEC. MQTT `listen.stop` waits 120 ms for trailing UDP before finalizing.
+Opus FEC. MQTT `listen.stop` follows the adaptive deadline for trailing UDP before finalizing.
 Late audio after stop is discarded until a new `listen.start`.
+
+The default `MQTT_UDP_SOURCE_POLICY=roaming` accepts different MQTT/UDP public IPs
+and mid-session UDP address/port changes. Replies follow the highest accepted
+sequence's source. Older reordered audio can still be accepted without reverting
+the destination. Optional `pinned` locks the first endpoint; `strict` additionally
+requires its IP to match MQTT. These are server policies requiring no firmware
+extension. Roaming relaxes the former source-IP safeguard; legacy UDP remains
+unauthenticated. Source inspection and regression cases do not establish actual
+speaker playback on the user's installed firmware.
 
 Playback primes up to 180 ms. The relay pauses sends above 64 KiB of WebSocket
 backlog and closes voice after 15 seconds of persistent blockage, or when the
