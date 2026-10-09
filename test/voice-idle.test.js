@@ -53,6 +53,59 @@ test('sustained voice resets the idle window, but a click or separated loud fram
   assert.equal(clicks.expired, 1);
 });
 
+test('continuous background noise above the base threshold settles and allows standby', () => {
+  const f = fixture({ timeoutMs: 15000 }); f.timer.start();
+  for (let i = 0; i < 300; i++) {
+    const detected = f.timer.pcm(pcm(900 + i % 4 * 100, 1200));
+    if (i >= 9) assert.equal(detected, false);
+    f.advance(60);
+  }
+  assert.equal(f.expired, 1);
+  assert.equal(f.jobs.size, 0);
+  const levels = f.timer.snapshot().audio_activity;
+  assert.equal(levels.calibrated, true);
+  assert.ok(levels.noise_floor >= 900);
+  assert.ok(levels.threshold > levels.rms);
+});
+
+test('speech above the learned background still resets standby without raising the floor immediately', () => {
+  const f = fixture({ timeoutMs: 15000 }); f.timer.start();
+  for (let i = 0; i < 240; i++) { f.timer.pcm(pcm(600)); f.advance(60); }
+  assert.equal(f.timer.pcm(pcm(2500)), false);
+  f.advance(60);
+  assert.equal(f.timer.pcm(pcm(2500)), true);
+  assert.equal(f.timer.snapshot().audio_activity.noise_floor, 600);
+  for (let i = 0; i < 20; i++) { f.advance(60); f.timer.pcm(pcm(600)); }
+  assert.equal(f.expired, 0);
+  f.advance(13800);
+  assert.equal(f.expired, 1);
+});
+
+test('quiet speech works after quiet calibration and stale background is discarded after a stream gap', () => {
+  const f = fixture(); f.timer.start();
+  for (let i = 0; i < 40; i++) { f.timer.pcm(pcm(200)); f.advance(60); }
+  assert.equal(f.timer.pcm(pcm(800)), false);
+  f.advance(60);
+  assert.equal(f.timer.pcm(pcm(800)), true);
+  for (let i = 0; i < 40; i++) { f.advance(60); f.timer.pcm(pcm(3000)); }
+  assert.ok(f.timer.snapshot().audio_activity.threshold > 3000);
+  f.advance(2100);
+  assert.equal(f.timer.pcm(pcm(800)), false);
+  assert.equal(f.timer.snapshot().audio_activity.calibrated, false);
+  f.advance(60);
+  assert.equal(f.timer.pcm(pcm(800)), true);
+});
+
+test('background calibration uses audio duration rather than the number of packets', () => {
+  const short = fixture(), long = fixture(); short.timer.start(); long.timer.start();
+  for (let i = 0; i < 120; i++) {
+    short.timer.pcm(pcm(1000).subarray(0, 640)); short.advance(20);
+    if (i % 3 === 0) { long.timer.pcm(pcm(1000)); long.advance(60); }
+  }
+  assert.deepEqual(short.timer.snapshot().audio_activity, long.timer.snapshot().audio_activity);
+  assert.equal(short.timer.snapshot().audio_activity.threshold, 2500);
+});
+
 test('AI generation, playback and parallel tools pause standby until all work finishes', () => {
   const f = fixture(); f.timer.start(); f.advance(59000);
   f.timer.hold('response'); f.timer.hold('playback');

@@ -1244,7 +1244,7 @@ wssXiaozhi.on('connection', (ws, req) => {
       metrics.speech_frames++;
       if (!lastSpeechLogAt || Date.now() - lastSpeechLogAt >= 10000) {
         lastSpeechLogAt = Date.now();
-        trace.event('audio.speech_detected', { ...voiceIdle.snapshot(), pcm_bytes: pcmChunk.length });
+        trace.event('audio.activity_detected', { ...voiceIdle.snapshot(), pcm_bytes: pcmChunk.length });
       }
     }
     audioInput.push(pcmChunk);

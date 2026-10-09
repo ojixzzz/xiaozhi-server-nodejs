@@ -196,8 +196,11 @@ token query string. See [MCP pipe setup](remote-mcp.en.md).
 Voice sessions return to standby after 60 seconds without detected speech by
 default. Device **Config → Standby otomatis setelah diam** overrides
 `VOICE_IDLE_TIMEOUT_SECONDS` (0 disables; otherwise 15–3600 seconds).
-`VOICE_ACTIVITY_THRESHOLD` tunes microphone energy detection (default 500,
-50–10000). Output/playback and pending tools pause the timer; pauses expire if
+`VOICE_ACTIVITY_THRESHOLD` sets the minimum microphone energy threshold (default
+500, 50–10000). The standby detector raises the effective threshold above a
+rolling background estimate to avoid treating steady noise as continuous speech.
+This heuristic only affects standby; it does not filter audio sent to the AI.
+Output/playback and pending tools pause the timer; pauses expire if
 no further activity/completion arrives for two minutes, followed by the full
 speech idle window. Apply env changes by recreating the Compose service; device
 settings persist in `devices.json`. MQTT remains connected after a speech timeout.

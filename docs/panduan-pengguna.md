@@ -50,9 +50,14 @@ Pada MQTT, koneksi tetap online sehingga beep notifikasi dapat diterima setelah
 sesi suara berakhir. Pada WebSocket langsung, sesi ditutup dan perangkat dapat
 membuka percakapan baru melalui mekanisme firmware-nya.
 
-Deteksi suara memakai level audio sederhana. Suara orang lain, TV, atau kebisingan
-terus-menerus dapat memperpanjang sesi. Jika terlalu sensitif atau tidak mendengar
-suara pelan, administrator dapat menyesuaikan `VOICE_ACTIVITY_THRESHOLD`.
+Deteksi aktivitas menyesuaikan ambang volume dengan perkiraan noise latar dari
+dua detik audio terakhir, mulai setelah 0,5 detik audio terkumpul. Noise yang
+stabil tidak terus dianggap pengguna berbicara. Audio tetap dikirim utuh ke AI;
+penyesuaian ini hanya untuk timer standby. Ini masih perkiraan berdasarkan volume:
+suara orang lain, TV, atau noise yang berubah-ubah dapat memperpanjang sesi,
+sedangkan suara pelan dekat level noise dapat terlewat. Transkripsi dari AI
+juga mereset timer. Administrator dapat menyesuaikan batas minimum
+`VOICE_ACTIVITY_THRESHOLD` bila diperlukan.
 Jika AI/tools berhenti mengirim aktivitas tanpa menyelesaikan respons, jeda
 pelindung berakhir setelah dua menit, lalu hitungan diam dimulai kembali. Batas
 jaringan gateway tetap terpisah dari timeout suara ini.

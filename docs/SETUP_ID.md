@@ -236,8 +236,11 @@ boleh dikirim perangkat tanpa memperpanjang sesi. Sesi suara berakhir dengan
 `goodbye`; koneksi MQTT tetap online untuk beep. Ini tidak mengubah timer deep
 sleep/baterai firmware.
 
-Deteksi sederhana memakai RMS audio, default threshold 500. Untuk mikrofon pelan
-coba nilai lebih rendah; jika suara latar mempertahankan sesi, nilai lebih tinggi.
+Deteksi aktivitas memakai RMS audio dengan ambang minimum 500. Ambang efektif
+menyesuaikan perkiraan noise latar agar noise stabil tidak terus mereset timer.
+Ini hanya memengaruhi standby, bukan audio yang dikirim ke AI. Untuk mikrofon
+pelan coba minimum lebih rendah; jika noise berubah-ubah mempertahankan sesi,
+coba nilai lebih tinggi.
 `VOICE_ACTIVITY_THRESHOLD` menerima 50–10000. Perubahan env perlu diterapkan ulang
 ke server/container; pengaturan perangkat tersimpan pada volume data.
 

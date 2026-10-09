@@ -93,7 +93,7 @@ dengan log jadwal dan pengiriman di agent; lihat
 | `audio.udp_stats` / `audio.input_gap` | Paket UDP diterima, diurutkan, terlambat/duplikat, hilang, atau celah audio yang diisi keheningan |
 | `audio.downlink_blocked` / `audio.downlink_recovered` | Antrean WebSocket keluar penuh lalu pulih; audio tidak terus ditambahkan ke socket yang macet |
 | `audio.downlink_overflow` | Antrean suara mencapai batas; sesi ditutup dengan alasan `audio_backpressure` |
-| `audio.first_packet` / `audio.speech_detected` | Audio perangkat masuk / level suara terdeteksi; bukan bukti ucapan berhasil dipahami |
+| `audio.first_packet` / `audio.activity_detected` | Audio perangkat masuk / energi audio melewati ambang adaptif; bukan bukti ucapan berhasil dipahami. Versi lama memakai nama `audio.speech_detected` |
 | `audio.output_started` / `audio.playback_drained` | Respons AI mulai diterima / antrean server selesai dikirim; bukan konfirmasi fisik speaker |
 | `tool.requested` / `tool.response_submitted` | Cocokkan `call_id` untuk melihat nama tool, jalur pemanggilan, lama proses, dan hasil gagal; argumen/isi hasil tidak disalin |
 | `provider.error` / `provider.closed` | Error lengkap atau alasan koneksi AI berakhir, beserta percobaan dan tahapnya |
@@ -120,13 +120,32 @@ WebSocket. Pada MQTT, peer tersebut adalah gateway, bukan speaker perangkat.
 Ringkasan audio tidak menulis rekaman/base64, dan deteksi
 suara dibatasi satu log per 10 detik agar tidak menumpuk setiap paket.
 
+## Saat diam tetapi timer standby terus direset
+
+Pada versi lama, noise di atas ambang tetap selama 120 ms dapat memicu
+`audio.speech_detected`. Nama log itu tidak membuktikan pengguna berbicara.
+Versi baru memakai `audio.activity_detected` dan ambang yang menyesuaikan noise
+latar. Lihat `audio_activity` pada log aktivitas atau `session.status`:
+
+- `rms`: level audio terakhir, setelah bias DC mikrofon dihilangkan.
+- `noise_floor`: perkiraan level latar dari bagian 20% terbawah dalam dua detik audio.
+- `threshold`: ambang efektif, nilai terbesar antara minimum konfigurasi dan 2,5 kali level latar.
+- `calibrated`: minimal 0,5 detik audio sudah terkumpul untuk memperkirakan noise.
+
+Noise stabil seharusnya berada di bawah `threshold` setelah kalibrasi. Noise
+berubah-ubah, TV, atau suara orang lain masih bisa memicu aktivitas; detektor ini
+bukan pengenal ucapan. `speech_frames` dipertahankan untuk kompatibilitas dan
+menghitung frame yang lolos detektor energi, bukan kata yang dikenali. Penyesuaian
+ini tidak membuang atau mengubah audio yang dikirim ke Gemini. Jika timer tetap
+direset, periksa juga transkripsi AI serta `holds` untuk respons, playback, dan tool.
+
 ## Saat perangkat terlalu cepat standby
 
 1. Pastikan `session.configured.idle_seconds` sesuai pengaturan, misalnya `60`.
 2. Jika ada `provider.closed` sebelum `provider.ready`, baca `code` dan `reason`:
    kemungkinan kegagalan ada pada setup AI, bukan penghitung diam.
 3. Jika ada `idle.timeout`, cocokkan `idle_ms` dan `timeout_ms`. Lihat apakah
-   `audio.speech_detected` muncul setelah pengguna bicara.
+   `audio.activity_detected` muncul setelah pengguna bicara.
 4. Jika `device.disconnected` muncul tanpa `session.standby`, periksa kode
    penutupan perangkat, jaringan/gateway, atau perubahan pengaturan. Untuk MQTT,
    sertakan juga `docker compose logs --since=10m gateway`.
