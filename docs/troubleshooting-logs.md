@@ -67,6 +67,13 @@ Baris baru mempunyai penanda `trace` dan data JSON. Contoh ilustrasi:
 
 ## Kejadian yang penting
 
+Untuk pengingat ganda, cari `tool.requested` pada sesi saat membuat jadwal.
+`source_tool` adalah nama asli tool agent, sedangkan `tool` dapat berupa alias
+internal. Periksa apakah permintaan yang sama diteruskan melalui tool khusus
+pengingat sekaligus tool agent umum. Bila hanya satu pemanggilan, lanjutkan
+dengan log jadwal dan pengiriman di agent; lihat
+[aturan satu pengingat](remote-mcp.md#satu-permintaan-pengingat-satu-notifikasi).
+
 | Kejadian | Makna |
 | --- | --- |
 | `session.configured` | Backend, timeout efektif, asal timeout perangkat/server, dan ambang deteksi suara |

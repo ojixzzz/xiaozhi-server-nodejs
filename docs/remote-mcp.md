@@ -131,6 +131,36 @@ atau “ada apa” membacakan **judul dahulu**. Detail ada di
 
 ## Memahami status dan masalah umum
 
+### Satu permintaan pengingat, satu notifikasi
+
+“Ingatkan minum 5 menit lagi” berarti **satu** jadwal: judul **Minum**, waktunya
+5 menit lagi. Agent mengembalikan konfirmasi pembuatan lewat hasil tool agar
+XiaoZhi dapat mengucapkannya. Saat waktunya tiba, agent mengirim satu pesan inbox.
+Konfirmasi pembuatan tidak perlu menjadi notifikasi tambahan kecuali diminta.
+
+Jika tersedia tool khusus seperti `hermes_reminder_create`, gunakan tool itu
+untuk membuat jadwal. Jangan sekaligus meminta `ask_hermes` membuat pengingat
+yang sama atau memasang timer kedua. Penjadwalan dijalankan oleh agent eksternal;
+relay hanya menerima pesan ketika agent mengirimkannya.
+
+Agent perlu menyimpan ID jadwal dan ID kejadian jatuh tempo. Semua pengiriman
+ulang untuk kejadian yang sama memakai `idempotency_key` tetap, misalnya
+`reminder-JOB_ID-OCCURRENCE_ID`, dengan judul dan isi yang sama. Jangan membuat
+UUID baru setiap retry. Untuk pengingat berulang, setiap kejadian berikutnya
+memiliki ID baru. Relay sudah mengulang beep tiap menit sampai read; agent
+tidak perlu mengirim pesan inbox baru untuk mengulang bunyi.
+
+Jika muncul dua judul setelah 5 menit, periksa jumlah jadwal di agent serta log
+`tool.requested` pada sesi pembuatannya. Kolom `source_tool` menunjukkan nama
+asli tool; dua jalur pembuatan atau dua jadwal dapat menjelaskan duplikasi.
+Jika hanya satu jadwal dibuat, periksa worker pengirim dan key yang dipakainya.
+Pesan dengan key berbeda dianggap pesan terpisah, meskipun waktunya sama.
+Setelah memperbarui server, salin ulang **Salin untuk agent** ke agent yang sudah
+terhubung dan buka percakapan baru agar petunjuk baru diterapkan. Perubahan ini
+tidak menghapus jadwal ganda yang sudah dibuat di agent.
+
+### Status koneksi
+
 | Status / gejala | Langkah berikutnya |
 | --- | --- |
 | **Inbox siap · menunggu koneksi MCP pipe** | Isi MCP_ENDPOINT dan jalankan pipe di mesin agent |

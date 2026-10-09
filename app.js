@@ -1677,6 +1677,7 @@ wssXiaozhi.on('connection', (ws, req) => {
           metrics.tool_calls++;
           pendingToolCalls.set(callId, { started: performance.now() });
           trace.event('tool.requested', { attempt, call_id: callId, tool: name,
+            source_tool: endpointToolRoutes.get(name)?.name || remoteToolRoutes.get(name)?.name || name,
             route: endpointToolRoutes.has(name) ? 'endpoint' : remoteToolRoutes.has(name) ? 'remote_http' : name.startsWith('notifications_') ? 'inbox' : 'device_or_builtin' });
           voiceIdle.hold(`tool:${callId}`);
           voiceIdle.hold('response');

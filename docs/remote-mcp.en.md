@@ -108,6 +108,34 @@ or “ada apa”. See [notification behavior](../README.en.md#notification-behav
 
 ## Status and troubleshooting
 
+### One reminder request, one notification
+
+“Remind me to drink in 5 minutes” is one schedule: **Drink** is the subject and
+**5 minutes** is the delay. Return schedule creation confirmation as a tool
+result for XiaoZhi to speak. Send one inbox message when it is due, without an
+extra creation notification unless the user requests one.
+
+Prefer a dedicated tool such as `hermes_reminder_create` when available. Do not
+also delegate the same reminder to `ask_hermes` or create another timer. The
+external agent owns scheduling; the relay stores messages when they arrive.
+
+Persist the schedule ID and due occurrence ID. All workers and retries for the
+same occurrence must use a stable `idempotency_key`, such as
+`reminder-JOB_ID-OCCURRENCE_ID`, and identical title/body. A later occurrence of a
+recurring reminder gets a new occurrence ID. Do not generate a new UUID on each
+retry or send a new inbox message every minute: the relay already repeats the
+chime until read.
+
+If two titles arrive at the due time, inspect schedules in the agent and the
+creation session's `tool.requested` events. `source_tool` identifies the original
+tool name. Check for two creation paths, two schedules, or a delivery worker
+using different keys. Different keys represent separate messages. After updating
+the server, copy **Salin untuk agent** to the existing agent again and open a
+new voice conversation to apply the instructions. Existing duplicate schedules
+in the agent are not removed by this update.
+
+### Connection status
+
 | Dashboard status / symptom | Next step |
 | --- | --- |
 | **Inbox siap · menunggu koneksi MCP pipe** | Set MCP_ENDPOINT and start the pipe |
