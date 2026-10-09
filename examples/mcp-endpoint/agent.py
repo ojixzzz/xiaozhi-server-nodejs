@@ -16,6 +16,8 @@ def agent_echo(message: str) -> dict:
 def agent_notify(title: str, text: str, idempotency_key: str) -> dict:
     """Send an inbox message to the paired XiaoZhi device ONLY when requested.
 
+    Title: at most 120 JavaScript UTF-16 code units; text: at most 2000.
+    Emoji may count as two units. Oversized messages are rejected, not truncated.
     Reuse the same idempotency_key and content for retries of the same message.
     A stored receipt confirms persistence, not audible playback.
     """
