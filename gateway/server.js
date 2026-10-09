@@ -22,6 +22,7 @@ function endpoint(value, protocols, name) {
   return url;
 }
 function ip(value) { return value?.replace(/^::ffff:/, ''); }
+function audioStats(session) { return { ...session.jitter.snapshot(), ...session.ingress }; }
 async function readBounded(stream, limit) {
   const chunks = []; let size = 0;
   for await (const data of stream) { size += data.length; if (size > limit) throw new Error('Payload too large'); chunks.push(Buffer.from(data)); }
@@ -63,6 +64,8 @@ class Gateway extends EventEmitter {
     if (typeof o.publicHost !== 'string' || !o.publicHost || /[\s/:?#]/.test(o.publicHost)) throw new Error('publicHost must be an IPv4 address or hostname');
     this.connections = new Map(); this.peers = new Set(); this.sessions = new Map();
     this.httpActive = 0; this.started = false; this.stopping = false;
+    this.udpIngress = { datagrams: 0, malformed: 0, unknown_route: 0 };
+    this.lastUdpIngress = { ...this.udpIngress }; this.lastUdpIngressAt = Date.now();
   }
   async registry(deviceId, clientId) {
     const url = new URL(encodeURIComponent(deviceId), this.registryUrl); url.searchParams.set('client_id', clientId);
@@ -110,7 +113,7 @@ class Gateway extends EventEmitter {
       await listen(this.httpServer, () => this.httpServer.listen(this.options.httpPort, this.options.httpHost));
       if (this.stopping) throw new Error('Gateway closed during startup');
       this.started = true;
-      this.timer = setInterval(() => { for (const peer of this.peers) peer.tick(); }, 500); this.timer.unref();
+      this.timer = setInterval(() => { for (const peer of this.peers) peer.tick(); this.reportUdpIngress(); }, 500); this.timer.unref();
       return this.address();
     } catch (error) { await this.close(); throw error; }
   }
@@ -164,15 +167,35 @@ class Gateway extends EventEmitter {
     catch { return false; }
   }
   allocateRoute() { let route; do { route = crypto.randomBytes(4).readUInt32BE(); } while (!route || this.sessions.has(route)); return route; }
+  reportUdpIngress() {
+    if (Date.now() - this.lastUdpIngressAt < 5000) return;
+    const delta = Object.fromEntries(Object.entries(this.udpIngress).map(([key, value]) => [key, value - this.lastUdpIngress[key]]));
+    if (delta.malformed || delta.unknown_route) this.emit('audioStats', {
+      event: 'audio.udp_unmatched', level: 'warn', scope: 'gateway', ...this.udpIngress, delta
+    });
+    this.lastUdpIngress = { ...this.udpIngress }; this.lastUdpIngressAt = Date.now();
+  }
   receiveUdp(message, info) {
-    if (message.length < 17 || message.length > 16 + this.options.maxAudioPacket || message[0] !== 1 || message[1] !== 0 || message.readUInt16BE(2) !== message.length - 16) return;
+    this.udpIngress.datagrams++;
+    if (message.length < 16) { this.udpIngress.malformed++; return; }
     const session = this.sessions.get(message.readUInt32BE(4));
-    if (!session || !session.ready || session.peer.stream.closed || session.peer.session !== session || ip(info.address) !== ip(session.peer.socket.remoteAddress)) return;
-    if (session.remote && (session.remote.address !== info.address || session.remote.port !== info.port)) return;
+    if (session) session.ingress.ingress_datagrams++;
+    if (message.length < 17 || message.length > 16 + this.options.maxAudioPacket || message[0] !== 1 || message[1] !== 0 || message.readUInt16BE(2) !== message.length - 16) {
+      this.udpIngress.malformed++; if (session) session.ingress.rejected_header++; return;
+    }
+    if (!session) { this.udpIngress.unknown_route++; return; }
+    if (!session.ready || session.peer.stream.closed || session.peer.session !== session) { session.ingress.rejected_state++; return; }
+    if (ip(info.address) !== ip(session.peer.socket.remoteAddress)) {
+      session.ingress.rejected_source_ip++; session.lastRejectedSource = { address: info.address, port: info.port }; return;
+    }
+    if (session.remote && (session.remote.address !== info.address || session.remote.port !== info.port)) {
+      session.ingress.rejected_endpoint++; session.lastRejectedSource = { address: info.address, port: info.port }; return;
+    }
     if (Date.now() - session.udpRateWindow >= 1000) { session.udpRateWindow = Date.now(); session.udpRateCount = 0; }
-    if (++session.udpRateCount > 200) return;
+    if (++session.udpRateCount > 200) { session.ingress.rejected_rate++; return; }
     const sequence = message.readUInt32BE(12);
     if (session.inputStopped) { session.jitter.stats.after_stop++; return; }
+    if (!sequence) { session.ingress.rejected_sequence++; return; }
     const cipher = crypto.createDecipheriv('aes-128-ctr', session.key, message.subarray(0, 16));
     const opus = Buffer.concat([cipher.update(message.subarray(16)), cipher.final()]);
     if (!session.jitter.push(sequence, opus) || session.peer.session !== session) return;
@@ -262,6 +285,7 @@ class Peer {
     if (json.type === 'mcp' && !object(json.payload)) return;
     if (json.type === 'listen' && json.state === 'stop') {
       const session = this.session;
+      session.inputWatch = null;
       if (session.inputStopped) return;
       session.jitter.requestEnd(() => {
         if (this.session !== session) return;
@@ -273,6 +297,7 @@ class Peer {
     if (json.type === 'listen' && json.state === 'start') {
       this.session.jitter.cancelEnd();
       this.session.inputStopped = false;
+      this.session.inputWatch ||= { since: Date.now(), warned: false };
     }
     this.session.lastActivity = Date.now(); this.sendUpstream(JSON.stringify(json), false);
   }
@@ -286,11 +311,24 @@ class Peer {
       localSequence: 0, remoteSequence: 0, timestamp: 0, ready: false, controlReady: false, audioQueue: [], controlQueue: [],
       createdAt: Date.now(), lastActivity: Date.now(), udpRateWindow: Date.now(), udpRateCount: 0, pendingUdp: 0};
     this.session = session; this.server.sessions.set(session.route, session);
+    session.ingress = { ingress_datagrams: 0, rejected_header: 0, rejected_state: 0,
+      rejected_source_ip: 0, rejected_endpoint: 0, rejected_rate: 0, rejected_sequence: 0 };
     session.inputDuration = hello.audio_params.frame_duration;
     session.lastStatsAt = Date.now();
     session.jitter = new UdpJitterBuffer({
       onPacket: (opus, sequence) => {
-        if (this.session === session && this.sendUpstream(opus, true)) session.remoteSequence = sequence;
+        if (this.session === session && this.sendUpstream(opus, true)) {
+          session.remoteSequence = sequence;
+          if (session.inputWatch) {
+            if (session.inputWatch.warned) this.server.emit('audioStats', {
+              event: 'audio.udp_input_resumed', device_id: this.identity.deviceId, session_id: session.sessionId,
+              gap_ms: Date.now() - session.inputWatch.since, ...audioStats(session)
+            });
+            // Watch only the first audio after listen.start. Later silence can
+            // be intentional (DTX or firmware speaking mode), not a broken path.
+            session.inputWatch = null;
+          }
+        }
       },
       onGap: frames => {
         if (this.session === session) this.sendUpstream(JSON.stringify({ type: 'audio_gap', frames,
@@ -378,7 +416,7 @@ class Peer {
     const session = this.session;
     if (!session || expected !== session) return;
     this.server.emit('audioStats', { device_id: this.identity.deviceId, session_id: session.sessionId,
-      event: 'audio.udp_session_closed', ...session.jitter.snapshot() });
+      event: 'audio.udp_session_closed', ...audioStats(session) });
     session.jitter.stop();
     this.session = null; this.server.sessions.delete(session.route); clearTimeout(session.helloTimer);
     session.ready = false; session.audioQueue.length = 0; session.controlQueue.length = 0; session.key.fill(0);
@@ -391,9 +429,19 @@ class Peer {
       (this.stream.partialSince && now - this.stream.partialSince > o.fragmentTimeout) ||
       (this.connected && now - this.stream.lastPacketAt > (this.keepAlive ? this.keepAlive * 1500 : o.maxNoKeepAliveIdle))) { this.close(); return; }
     const session = this.session;
+    if (session?.ready && session.inputWatch && !session.inputWatch.warned && now - session.inputWatch.since >= 5000) {
+      session.inputWatch.warned = true;
+      this.server.emit('audioStats', { event: 'audio.udp_input_stalled', level: 'warn',
+        device_id: this.identity.deviceId, session_id: session.sessionId,
+        no_audio_ms: now - session.inputWatch.since, ...audioStats(session),
+        advertised_host: o.publicHost, advertised_port: this.server.address().udp?.port,
+        mqtt_peer: ip(this.socket.remoteAddress), udp_peer: session.remote,
+        last_rejected_source: session.lastRejectedSource || null
+      });
+    }
     if (session?.ready && now - session.lastStatsAt >= 5000) {
       session.lastStatsAt = now;
-      this.sendUpstream(JSON.stringify({ type: 'audio_transport_stats', stats: session.jitter.snapshot() }), false);
+      this.sendUpstream(JSON.stringify({ type: 'audio_transport_stats', stats: audioStats(session) }), false);
     }
     if (session && (now - session.lastActivity > o.maxSessionIdle || now - session.createdAt > o.maxSessionDuration ||
       (session.audioQueue.length && !session.remote && now - session.createdAt > 10000))) this.endSession(true);
@@ -427,7 +475,7 @@ if (require.main === module) {
   catch (error) { console.error(`Gateway configuration error: ${error.message}`); process.exitCode = 1; }
   if (gateway) {
     gateway.on('serverError', () => { console.error('Gateway listener failed'); void gateway.close().finally(() => { process.exitCode = 1; }); });
-    gateway.on('audioStats', stats => console.info(`Gateway audio stats: ${JSON.stringify(stats)}`));
+    gateway.on('audioStats', stats => console[stats.level === 'warn' ? 'warn' : 'info'](`Gateway audio stats: ${JSON.stringify(stats)}`));
     gateway.start().then((addresses) => console.log(`MQTT gateway listening on ${addresses.mqtt.address}:${addresses.mqtt.port}; UDP ${addresses.udp.port}; private HTTP ${addresses.http.address}:${addresses.http.port}`))
       .catch(() => { console.error('Gateway startup failed'); process.exitCode = 1; });
     for (const signal of ['SIGINT', 'SIGTERM']) process.once(signal, () => { void gateway.close(); });

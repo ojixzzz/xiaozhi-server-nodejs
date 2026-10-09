@@ -92,6 +92,8 @@ dengan log jadwal dan pengiriman di agent; lihat
 | `provider.resumption_rejected` | Checkpoint ditolak saat setup; percobaan berikutnya memakai sesi baru |
 | `audio.input_summary` | Ringkasan celah audio dan statistik UDP tiap 5 detik selama ada aktivitas; menggantikan `audio.udp_stats` |
 | `audio.input_gap` | Detail setiap celah, hanya pada `LOG_LEVEL=debug`; jumlah frame terlambat melewati batas tunggu dan frame yang diganti keheningan |
+| `audio.udp_input_stalled` / `audio.udp_input_resumed` (gateway) | Belum ada audio diteruskan dalam 5 detik setelah `listen.start` / audio pertama akhirnya diteruskan |
+| `audio.udp_unmatched` (gateway) | Ringkasan paket UDP dengan header tidak valid atau rute sesi tidak dikenal; mencakup seluruh gateway |
 | `audio.downlink_blocked` / `audio.downlink_recovered` | Antrean WebSocket keluar penuh lalu pulih; audio tidak terus ditambahkan ke socket yang macet |
 | `audio.downlink_overflow` | Antrean suara mencapai batas; sesi ditutup dengan alasan `audio_backpressure` |
 | `audio.first_packet` / `audio.activity_detected` | Audio perangkat masuk / energi audio melewati ambang adaptif; bukan bukti ucapan berhasil dipahami. Versi lama memakai nama `audio.speech_detected` |
@@ -120,6 +122,61 @@ selesai; `socket_buffered_bytes` menunjukkan data yang menunggu dikirim ke peer
 WebSocket. Pada MQTT, peer tersebut adalah gateway, bukan speaker perangkat.
 Ringkasan audio tidak menulis rekaman/base64, dan deteksi
 suara dibatasi satu log per 10 detik agar tidak menumpuk setiap paket.
+
+## Tetap mendengarkan, tetapi audio masuk nol
+
+Jika `provider.ready` sudah muncul, tetapi `input_packets=0` dan `pcm_frames=0`,
+relay belum menerima audio mikrofon. Jika gateway juga melaporkan `received=0`,
+belum ada paket masuk ke buffer pengurutan. Ini **belum membuktikan bahwa tidak
+ada datagram mencapai gateway**: pemeriksaan header, sesi, dan alamat sumber
+dilakukan sebelum counter `received` bertambah. Memperbesar buffer tidak
+menyelesaikan jalur yang belum menerima paket.
+
+Gateway menulis `audio.udp_input_stalled` satu kali jika belum ada audio yang
+diteruskan selama 5 detik setelah `listen.start`. Log memuat `advertised_host`,
+`advertised_port`, `mqtt_peer`, `udp_peer`, dan counter berikut. Pengamatan ini
+berakhir setelah audio pertama diteruskan atau `listen.stop` diterima, agar
+hening saat perangkat sedang memutar jawaban tidak dianggap gangguan baru.
+
+| Field | Makna |
+| --- | --- |
+| `ingress_datagrams` | Datagram dengan ID rute sesi ini, dihitung sebelum validasi; ID ini belum membuktikan keaslian paket |
+| `rejected_header` | Panjang, tipe, flags, atau panjang payload tidak sesuai format gateway |
+| `rejected_state` | Sesi belum siap atau sudah tidak aktif |
+| `rejected_source_ip` | IP sumber UDP berbeda dari IP koneksi MQTT |
+| `rejected_endpoint` | Alamat/port UDP berubah setelah endpoint pertama dikenali |
+| `rejected_rate` | Laju melewati batas 200 datagram per detik per sesi |
+| `rejected_sequence` | Nomor urutan nol, sebelum audio masuk buffer |
+
+Counter juga tersedia di `audio.udp_session_closed` dan `audio.input_summary`.
+Paket terlalu pendek untuk dibaca ID rutenya atau memakai rute yang tidak dikenal
+masuk log `audio.udp_unmatched`, maksimal satu ringkasan per 5 detik jika ada
+perubahan. Log ini berlingkup **seluruh gateway**, bukan bukti paket berasal dari
+perangkat tertentu. Tidak ada audio, kunci AES, nonce, atau token yang dicatat.
+Alamat jaringan dicatat untuk diagnosis; samarkan jika membagikan log publik.
+
+Untuk perangkat yang mengakses IP VPS langsung:
+
+1. Cocokkan `advertised_host` dengan IP/hostname VPS yang dapat dijangkau
+   perangkat. Nilai `127.0.0.1`, nama service Docker, atau IP jaringan internal
+   yang tidak terjangkau perangkat tidak cocok untuk alamat publik ini.
+2. Cocokkan `advertised_port` (default **8884 UDP**) dengan port yang dipublikasikan
+   Docker dan aturan firewall VPS/security group. MQTT TCP yang berhasil tidak
+   membuktikan UDP sudah terbuka. Compose bawaan memakai `MQTT_BIND_ADDRESS`
+   untuk kedua port; defaultnya `127.0.0.1`, sehingga binding aktual perlu dicek.
+3. Saat pengguna berbicara, amati header paket di VPS (ganti port bila berbeda):
+
+   ```sh
+   sudo tcpdump -ni any -nn -q 'udp dst port 8884'
+   ```
+
+   Hentikan dengan Ctrl+C. Tidak ada paket saat berbicara mengarahkan pemeriksaan
+   ke pengiriman perangkat, alamat tujuan, jaringan, atau firewall sebelum host.
+   Paket terlihat pada VPS tetapi tidak pada gateway mengarahkan pemeriksaan ke
+   firewall host dan pemetaan Docker. Satu paket dapat tampil pada beberapa
+   interface; jangan menyamakan jumlah baris dengan jumlah audio.
+4. Jika counter penolakan bertambah, gunakan alasan spesifiknya. Jangan
+   menonaktifkan pemeriksaan alamat sumber untuk menutupi ketidakcocokan rute.
 
 ## Koneksi audio MQTT/UDP tidak stabil
 
@@ -270,6 +327,16 @@ Filter relay logs by `session_id`; include the whole session from connection to
 disconnect. `seq` orders events, `elapsed_ms` measures time since the device
 connection, and `attempt` distinguishes AI reconnects. `gemini.socket_open` is
 transport readiness; `provider.ready` means session setup was accepted.
+When relay `input_packets` and gateway `received` both stay zero, no audio has
+reached the reorder buffer; packets may still have been rejected before it.
+`ingress_datagrams` and the `rejected_*` counters expose those early checks.
+The gateway logs `audio.udp_input_stalled` once after five seconds without the
+first forwarded packet following `listen.start`, with advertised UDP destination
+and peer addresses. A subsequent first packet logs `audio.udp_input_resumed`.
+The watch ends after that packet or `listen.stop`; it does not treat later DTX
+or playback silence as a failure. `audio.udp_unmatched` aggregates malformed or
+unknown-route traffic gateway-wide every five seconds when counters change.
+These diagnostics preserve the existing peer checks and do not prove playback.
 An `Unknown name "uniqueItems"` setup rejection means a tool's JSON Schema was
 sent through Gemini's restricted `parameters` field. The server now uses
 `parametersJsonSchema`, preserving the original tool constraints. Update the

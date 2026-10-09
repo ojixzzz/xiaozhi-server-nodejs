@@ -212,6 +212,53 @@ test('MQTT stop drains adaptive UDP audio, preserves full gap counts and cancels
   assert.equal(timers.size, 0); assert.equal(sent.length, count); assert.equal(f.gateway.sessions.size, 0);
 });
 
+test('UDP ingress reports pre-buffer rejection, missing audio and recovery without relaxing peer checks', async (t) => {
+  const f = await fixture(t); const device = await f.device(); await device.frame(2); device.publish(hello);
+  const reply = await device.message('hello'), session = [...f.gateway.sessions.values()][0], peer = session.peer;
+  const events = [], sent = [];
+  f.gateway.on('audioStats', event => events.push(event));
+  peer.sendUpstream = (data, binary) => { if (!binary) sent.push(JSON.parse(data)); return true; };
+  const control = state => peer.handle(0x30, Buffer.concat([string('device-server'), Buffer.from(JSON.stringify({type:'listen',state}))]));
+  await control('start'); session.inputWatch.since -= 5001; peer.tick(); peer.tick();
+  const stalled = events.filter(event => event.event === 'audio.udp_input_stalled');
+  assert.equal(stalled.length,1); assert.equal(stalled[0].received,0); assert.equal(stalled[0].ingress_datagrams,0);
+  assert.equal(stalled[0].advertised_port,reply.udp.port); assert.equal(stalled[0].mqtt_peer,'127.0.0.1');
+  const wire = sequence => {
+    const opus = Buffer.from([0xf8,0xff,0xfe]), h = Buffer.from(reply.udp.nonce,'hex');
+    h.writeUInt16BE(opus.length,2); h.writeUInt32BE(sequence,12);
+    const cipher = crypto.createCipheriv('aes-128-ctr',session.key,h);
+    return Buffer.concat([h,cipher.update(opus),cipher.final()]);
+  };
+  const source = {address:'127.0.0.1',port:12345};
+  f.gateway.receiveUdp(wire(1),{...source,address:'203.0.113.20'});
+  const invalid = wire(1); invalid[1] = 1; f.gateway.receiveUdp(invalid,source);
+  session.ready = false; f.gateway.receiveUdp(wire(1),source); session.ready = true;
+  f.gateway.receiveUdp(wire(0),source);
+  assert.equal(session.jitter.stats.forwarded,0); assert.equal(session.remote,null);
+  f.gateway.receiveUdp(wire(1),source);
+  assert.equal(events.filter(event => event.event === 'audio.udp_input_resumed').length,1);
+  f.gateway.receiveUdp(wire(2),{...source,port:54321});
+  session.udpRateWindow = Date.now(); session.udpRateCount = 200; f.gateway.receiveUdp(wire(2),source);
+  assert.deepEqual(session.ingress,{ingress_datagrams:7,rejected_header:1,rejected_state:1,
+    rejected_source_ip:1,rejected_endpoint:1,rejected_rate:1,rejected_sequence:1});
+  assert.equal(session.jitter.stats.forwarded,1);
+  session.lastStatsAt = Date.now()-5001; peer.tick();
+  const stats = sent.find(value => value.type === 'audio_transport_stats').stats;
+  assert.equal(stats.ingress_datagrams,7); assert.equal(stats.rejected_source_ip,1);
+  // Traffic that cannot be associated with a session has a separate bounded log.
+  f.gateway.receiveUdp(Buffer.alloc(2),source);
+  f.gateway.receiveUdp(Buffer.concat([header(0,1),Buffer.from([0])]),source);
+  f.gateway.lastUdpIngressAt = Date.now()-5001; f.gateway.reportUdpIngress();
+  const unmatched = events.find(event => event.event === 'audio.udp_unmatched');
+  assert.equal(unmatched.scope,'gateway'); assert.equal(unmatched.malformed,2); assert.equal(unmatched.unknown_route,1);
+  f.gateway.lastUdpIngressAt = Date.now()-5001; f.gateway.reportUdpIngress();
+  assert.equal(events.filter(event => event.event === 'audio.udp_unmatched').length,1);
+  await control('stop'); assert.equal(session.inputWatch,null);
+  peer.endSession(false);
+  const closed = events.find(event => event.event === 'audio.udp_session_closed');
+  assert.equal(closed.ingress_datagrams,7); assert.equal(closed.forwarded,1);
+});
+
 test('malformed remaining length, oversized frame, wrong topic and stalled handshake close cleanly', async (t) => {
   const f = await fixture(t, {connectTimeout: 200, fragmentTimeout: 200});
   for (const bytes of [Buffer.from([0x10, 255, 255, 255, 255]), Buffer.from([0x10, 255, 255, 1])]) {

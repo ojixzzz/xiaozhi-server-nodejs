@@ -50,7 +50,7 @@ const { sanitizeLogValue, formatLogEntry, createSessionTrace } = require('./lib/
 const { startSocketHeartbeat } = require('./lib/socket-heartbeat');
 const { LiveRecovery } = require('./lib/live-recovery');
 const { PacedAudioInput } = require('./lib/paced-audio-input');
-const { createAudioInputDiagnostics } = require('./lib/audio-input-diagnostics');
+const { createAudioInputDiagnostics, UDP_STATS_FIELDS } = require('./lib/audio-input-diagnostics');
 
 // Configuration
 const GEMINI_API_KEY = process.env.GEMINI_API_KEY;
@@ -2099,7 +2099,7 @@ wssXiaozhi.on('connection', (ws, req) => {
           inputDiagnostics.gap(missing, duration, count);
         } else if (data.type === 'audio_transport_stats') {
           const stats = {};
-          for (const key of ['received', 'forwarded', 'late', 'stale', 'duplicates', 'reordered', 'recovered', 'missing', 'pending', 'wait_ms', 'unrecovered', 'untracked_missing', 'after_stop', 'max_reorder_wait_ms']) {
+          for (const key of UDP_STATS_FIELDS) {
             if (Number.isSafeInteger(data.stats?.[key]) && data.stats[key] >= 0) stats[key] = data.stats[key];
           }
           inputDiagnostics.transport(stats);

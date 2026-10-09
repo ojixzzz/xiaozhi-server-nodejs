@@ -29,3 +29,13 @@ test('stats use deltas, distinguish late recovery and flush the final incomplete
   const count=f.events.length;f.diagnostics.gap(1,60,1);f.diagnostics.transport({received:999});assert.equal(f.events.length,count);
   assert.equal(f.cleared,1);
 });
+test('rejected UDP is visible even when no packet reaches the jitter buffer, without repeated warnings',()=>{
+  const f=fixture();
+  f.diagnostics.transport({received:0,forwarded:0,ingress_datagrams:12,rejected_source_ip:12});f.tick();
+  assert.equal(f.events.length,1);assert.equal(f.events[0].level,'warn');
+  assert.equal(f.events[0].fields.udp_delta.rejected_source_ip,12);
+  f.tick();assert.equal(f.events.length,1);
+  f.diagnostics.transport({received:1,forwarded:1,ingress_datagrams:13,rejected_source_ip:12});f.tick();
+  assert.equal(f.events.at(-1).level,'info');assert.equal(f.events.at(-1).fields.udp_delta.rejected_source_ip,0);
+  f.diagnostics.stop();
+});
