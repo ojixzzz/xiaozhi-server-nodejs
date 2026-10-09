@@ -85,6 +85,7 @@ async function fixture(t, gatewayOptions = {}) {
         }
       }
       interrupt() { record({ type: 'interrupt' }); }
+      endAudio() { record({ type: 'audio_end' }); return true; }
       sendToolResponse() {}
       close() { if (this.closed) return; this.closed = true; record({ type: 'close' }); this.emit('close'); }
     }
@@ -340,8 +341,11 @@ test('real MQTT/UDP gateway bridges a protocol device to Node and delivers idle 
     assert.equal(expectedInputPcm.length, 1920);
     const uplinkPacket = await device.sendAudio(uplink, 120);
     assert.equal(uplinkPacket[1], 0, 'stock firmware uplink keeps the advertised zero flag');
-    const input = await until(async () => (await f.readEvents()).find(event => event.type === 'input_audio'), 'provider received decoded UDP uplink');
-    assert.deepEqual(Buffer.from(input.pcm, 'base64'), expectedInputPcm);
+    const input = await until(async () => {
+      const frames = (await f.readEvents()).filter(event => event.type === 'input_audio');
+      return frames.length >= 3 ? frames : null;
+    }, 'provider received paced UDP uplink');
+    assert.deepEqual(Buffer.concat(input.map(frame => Buffer.from(frame.pcm, 'base64'))), expectedInputPcm);
     const downlink = await device.receiveAudio();
     assert.equal(downlink.header[0], 1);
     assert.equal(downlink.header[1], 1, 'downlink uses a separate AES-CTR IV direction bit');
@@ -354,6 +358,8 @@ test('real MQTT/UDP gateway bridges a protocol device to Node and delivers idle 
     assert.equal(outputPcm.length, 2880);
     assert.deepEqual(outputPcm, decode(encode(f.outputPcm, 24000, 1440), 24000), 'PCM provider output traverses the real app encoder as raw Opus, without a WS v2 header');
     assert.ok(outputPcm.some(value => value !== 0));
+    device.publish({ type: 'listen', state: 'stop', session_id: firstHello.session_id });
+    await until(async () => (await f.readEvents()).some(event => event.type === 'audio_end'), 'MQTT listen.stop ends provider audio');
     device.publish({ type: 'abort', session_id: firstHello.session_id, reason: 'wake_word_detected' });
     await until(async () => (await f.readEvents()).some(event => event.type === 'interrupt'), 'MQTT abort reached provider');
     assert.deepEqual(device.errors, []);

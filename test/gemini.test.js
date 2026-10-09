@@ -11,7 +11,7 @@ function fixture({ autoSetup = true, delaySession = false, reject = null, fakeTi
   class FakeGenAI { constructor() { this.live = { connect: r => {
     request = r;
     r.callbacks.onopen();
-    if (reject) return Promise.reject(new Error(reject));
+    if (reject) return Promise.reject(typeof reject === 'string' ? new Error(reject) : reject);
     if (autoSetup) r.callbacks.onmessage({ setupComplete: {} });
     return delaySession ? new Promise(resolve => { resolveSession = resolve; }) : Promise.resolve(session);
   } }; } }
@@ -20,7 +20,7 @@ function fixture({ autoSetup = true, delaySession = false, reject = null, fakeTi
     module: { exports: {} }, Buffer, console,
     setTimeout: fakeTimers ? callback => { timeoutCallback = callback; return { unref() {} }; } : setTimeout,
     clearTimeout: fakeTimers ? () => {} : clearTimeout,
-    require: id => id === './base' ? Base : id === 'node:perf_hooks' ? require(id) : { GoogleGenAI: FakeGenAI }
+    require: id => id === './base' ? Base : id === 'node:perf_hooks' || id === '../lib/live-recovery' ? require(id) : { GoogleGenAI: FakeGenAI }
   };
   vm.runInNewContext(fs.readFileSync(require.resolve('../providers/gemini'), 'utf8'), sandbox);
   const provider = new sandbox.module.exports({ apiKey: 'fake', prompt: 'test', voice: 'Aoede', model: 'fake', input_transcription: true, output_transcription: true });
@@ -156,6 +156,37 @@ test('SDK connection rejection reports an error without a retry loop', async () 
   f.provider.on('close', details => { close = details; });
   await f.provider.connect([]);
   assert.match(errors[0], /Invalid API configuration/); assert.equal(close.retryable, false);
+});
+
+test('temporary SDK failure can retry and endAudio is sent only after setup', async () => {
+  const failed = fixture({ reject: new Error('Network failed', { cause: { code: 'ECONNRESET' } }) });
+  let details; failed.provider.on('error', () => {}); failed.provider.on('close', value => { details = value; });
+  await failed.provider.connect([]); assert.equal(details.retryable, true);
+  const f = fixture({ autoSetup: false });
+  const pending = f.provider.connect([]);
+  assert.equal(f.provider.endAudio(), false);
+  f.request().callbacks.onmessage({ setupComplete: {} }); await pending;
+  assert.equal(f.provider.endAudio(), true);
+  assert.equal(f.session.inputs[0].audioStreamEnd, true);
+  f.provider.close(); assert.equal(f.provider.endAudio(), false);
+});
+
+test('resumption handle is configured and updates/goAway are handled without logging the handle', async () => {
+  const f = fixture({ fakeTimers: true }); const updates = [], diagnostics = [];
+  f.provider.config.resumptionHandle = 'private-resumption-handle';
+  f.provider.on('resumption_update', value => updates.push(value));
+  f.provider.on('diagnostic', value => diagnostics.push(value));
+  await f.provider.connect([]);
+  assert.equal(f.request().config.sessionResumption.handle, 'private-resumption-handle');
+  assert.ok(f.request().config.contextWindowCompression.slidingWindow);
+  f.request().callbacks.onmessage({ sessionResumptionUpdate: { resumable: true, newHandle: 'next-private-handle' } });
+  assert.equal(updates[0].handle, 'next-private-handle');
+  f.request().callbacks.onmessage({ goAway: { timeLeft: '5s' } });
+  assert.equal(diagnostics.at(-1).reconnect_in_ms, 4000);
+  let details; f.provider.on('close', value => { details = value; }); f.timeout();
+  assert.equal(details.retryable, true); assert.equal(f.session.closeCalls, 1);
+  assert.equal(JSON.stringify(diagnostics).includes('private-handle'), false);
+  assert.equal(JSON.stringify(diagnostics).includes('private-resumption-handle'), false);
 });
 
 

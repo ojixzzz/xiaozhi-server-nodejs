@@ -11,6 +11,7 @@ const WebSocket = require('ws');
 const {MqttStream, Reader, parseConnect, packet} = require('./mqtt');
 const {validateMqttCredentials, parseClientId, normalizeDeviceId, equalSecret, secret} = require('./credentials');
 const {validateNotifyPayload} = require('../lib/notifications');
+const {UdpJitterBuffer} = require('../lib/udp-jitter-buffer');
 
 const CONTROL_TYPES = new Set(['listen', 'abort', 'mcp', 'iot']);
 const SERVER_TYPES = new Set(['tts', 'stt', 'llm', 'mcp', 'iot', 'system', 'error', 'listen', 'abort']);
@@ -171,11 +172,11 @@ class Gateway extends EventEmitter {
     if (Date.now() - session.udpRateWindow >= 1000) { session.udpRateWindow = Date.now(); session.udpRateCount = 0; }
     if (++session.udpRateCount > 200) return;
     const sequence = message.readUInt32BE(12);
-    if (sequence <= session.remoteSequence) return;
+    if (session.inputStopped) { session.jitter.stats.late++; return; }
     const cipher = crypto.createDecipheriv('aes-128-ctr', session.key, message.subarray(0, 16));
     const opus = Buffer.concat([cipher.update(message.subarray(16)), cipher.final()]);
-    if (!session.peer.sendUpstream(opus, true)) return;
-    session.remote = {address: info.address, port: info.port}; session.remoteSequence = sequence; session.lastActivity = Date.now();
+    if (!session.jitter.push(sequence, opus) || session.peer.session !== session) return;
+    session.remote = {address: info.address, port: info.port}; session.lastActivity = Date.now();
     const queued = session.audioQueue.splice(0);
     for (const queuedPacket of queued) session.peer.sendAudio(session, queuedPacket);
   }
@@ -259,6 +260,24 @@ class Peer {
     if (!this.session?.ready) return;
     if (json.session_id && json.session_id !== this.session.sessionId) return;
     if (json.type === 'mcp' && !object(json.payload)) return;
+    if (json.type === 'listen' && json.state === 'stop') {
+      // MQTT control may overtake the last UDP audio packets. Drain the small
+      // reorder window before forwarding the end-of-utterance signal.
+      const session = this.session;
+      clearTimeout(session.listenStopTimer);
+      session.listenStopTimer = setTimeout(() => {
+        if (this.session !== session) return;
+        session.jitter.flush();
+        session.inputStopped = true;
+        this.sendUpstream(JSON.stringify(json), false);
+      }, 120);
+      session.listenStopTimer.unref();
+      session.lastActivity = Date.now(); return;
+    }
+    if (json.type === 'listen' && json.state === 'start') {
+      clearTimeout(this.session.listenStopTimer);
+      this.session.inputStopped = false;
+    }
     this.session.lastActivity = Date.now(); this.sendUpstream(JSON.stringify(json), false);
   }
   send(json) { if (!this.connected) return Promise.resolve(false); return this.stream.publish(this.replyTo, json); }
@@ -271,6 +290,17 @@ class Peer {
       localSequence: 0, remoteSequence: 0, timestamp: 0, ready: false, controlReady: false, audioQueue: [], controlQueue: [],
       createdAt: Date.now(), lastActivity: Date.now(), udpRateWindow: Date.now(), udpRateCount: 0, pendingUdp: 0};
     this.session = session; this.server.sessions.set(session.route, session);
+    session.inputDuration = hello.audio_params.frame_duration;
+    session.lastStatsAt = Date.now();
+    session.jitter = new UdpJitterBuffer({
+      onPacket: (opus, sequence) => {
+        if (this.session === session && this.sendUpstream(opus, true)) session.remoteSequence = sequence;
+      },
+      onGap: frames => {
+        if (this.session === session) this.sendUpstream(JSON.stringify({ type: 'audio_gap', frames: Math.min(frames, 5),
+          frame_duration: session.inputDuration }), false);
+      }
+    });
     try {
       const record = await this.server.registry(this.identity.deviceId, this.clientId);
       if (this.session !== session || this.stream.closed) return;
@@ -351,6 +381,9 @@ class Peer {
   endSession(notify, expected = this.session) {
     const session = this.session;
     if (!session || expected !== session) return;
+    this.server.emit('audioStats', { device_id: this.identity.deviceId, session_id: session.sessionId,
+      event: 'audio.udp_session_closed', ...session.jitter.snapshot() });
+    session.jitter.stop(); clearTimeout(session.listenStopTimer);
     this.session = null; this.server.sessions.delete(session.route); clearTimeout(session.helloTimer);
     session.ready = false; session.audioQueue.length = 0; session.controlQueue.length = 0; session.key.fill(0);
     if (notify && session.sessionId && this.connected) void this.send({type: 'goodbye', session_id: session.sessionId});
@@ -362,6 +395,10 @@ class Peer {
       (this.stream.partialSince && now - this.stream.partialSince > o.fragmentTimeout) ||
       (this.connected && now - this.stream.lastPacketAt > (this.keepAlive ? this.keepAlive * 1500 : o.maxNoKeepAliveIdle))) { this.close(); return; }
     const session = this.session;
+    if (session?.ready && now - session.lastStatsAt >= 15000) {
+      session.lastStatsAt = now;
+      this.sendUpstream(JSON.stringify({ type: 'audio_transport_stats', stats: session.jitter.snapshot() }), false);
+    }
     if (session && (now - session.lastActivity > o.maxSessionIdle || now - session.createdAt > o.maxSessionDuration ||
       (session.audioQueue.length && !session.remote && now - session.createdAt > 10000))) this.endSession(true);
   }
@@ -394,6 +431,7 @@ if (require.main === module) {
   catch (error) { console.error(`Gateway configuration error: ${error.message}`); process.exitCode = 1; }
   if (gateway) {
     gateway.on('serverError', () => { console.error('Gateway listener failed'); void gateway.close().finally(() => { process.exitCode = 1; }); });
+    gateway.on('audioStats', stats => console.info(`Gateway audio stats: ${JSON.stringify(stats)}`));
     gateway.start().then((addresses) => console.log(`MQTT gateway listening on ${addresses.mqtt.address}:${addresses.mqtt.port}; UDP ${addresses.udp.port}; private HTTP ${addresses.http.address}:${addresses.http.port}`))
       .catch(() => { console.error('Gateway startup failed'); process.exitCode = 1; });
     for (const signal of ['SIGINT', 'SIGTERM']) process.once(signal, () => { void gateway.close(); });

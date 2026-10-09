@@ -3,6 +3,7 @@ module.exports = [
         id: 'gemini',
         name: 'Google Gemini',
         models: [
+            { id: 'gemini-3.8-live', name: 'Gemini 3.8 Live' },
             { id: 'gemini-2.5-flash-native-audio-preview-12-2025', name: 'Gemini 2.5 Flash Native Audio' },
             { id: 'gemini-2.0-flash-exp', name: 'Gemini 2.0 Flash Exp' },
             { id: 'gemini-2.0-flash', name: 'Gemini 2.0 Flash' }

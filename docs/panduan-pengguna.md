@@ -57,19 +57,64 @@ Jika AI/tools berhenti mengirim aktivitas tanpa menyelesaikan respons, jeda
 pelindung berakhir setelah dua menit, lalu hitungan diam dimulai kembali. Batas
 jaringan gateway tetap terpisah dari timeout suara ini.
 
-Jika koneksi Gemini terputus, server tidak langsung mengembalikan perangkat ke
-standby. Gangguan sementara dicoba ulang **sekali setelah 1 detik**; kesalahan
-konfigurasi/izin tidak dicoba ulang otomatis. Hitungan diam tetap mengikuti nilai
-Anda, termasuk `0` untuk mematikannya. Jika AI masih gagal tersambung, perangkat
-belum dapat menjawab; periksa log `Provider session closed` yang kini mencantumkan
-`phase`, `code`, dan `reason`. `phase=setup` berarti konfigurasi sesi belum
-diterima Gemini. Perbaiki konfigurasi sesuai alasannya lalu buka percakapan baru.
+Jika koneksi Gemini terputus sementara, server mencoba ulang maksimal **lima
+kali**, dengan jeda **1, 2, 4, 8, dan 15 detik**. Hitungan diam dijeda selama
+setup/pemulihan. Jatah retry kembali penuh setelah koneksi berhasil bertahan
+30 detik. Jika seluruh percobaan gagal atau konfigurasi/izin ditolak, sesi suara
+diakhiri dengan alasan `provider_unavailable`, termasuk saat timeout diam `0`.
+Ini mencegah perangkat terus terlihat Mendengarkan padahal AI tidak tersedia.
+Koneksi MQTT untuk notifikasi tetap dipertahankan. Periksa `phase`, `code`, dan
+`reason` pada log `Provider session closed`; buka percakapan baru setelah masalah
+teratasi. `phase=setup` berarti sesi belum diterima Gemini.
 
 Agent MCP yang tersambung, terputus, atau mencoba sambung ulang otomatis tidak
 mengembalikan perangkat ke standby. Percakapan tetap berjalan; buka percakapan
 baru untuk memuat tools agent yang baru. Perubahan dashboard yang memang perlu
 menutup sesi, misalnya mengubah timeout atau menghapus memori/koneksi, dicatat
 dengan alasan spesifik pada log `session.close_requested`.
+
+## Internet buruk atau perangkat dimatikan
+
+Ada dua sambungan yang dapat bermasalah: perangkat ke server, dan server ke AI.
+Pilih **Gemini 3.8 Live** pada konfigurasi model perangkat untuk menggunakan
+`gemini-3.8-live`. Pilihan model perangkat lama tidak diubah otomatis.
+Saat reconnect, server mencoba melanjutkan konteks melalui checkpoint Gemini
+jika masih valid dan tools/pengaturan sesuai. Jika checkpoint ditolak, server
+mencoba sesi baru. Tool yang status eksekusinya belum jelas tidak diputar ulang
+otomatis melalui checkpoint.
+
+Audio mikrofon dikirim dalam potongan **20 ms**, termasuk setelah reconnect.
+Buffer menyimpan maksimal **3 detik audio yang belum dikirim**; audio lebih lama
+dibuang agar ucapan tidak tertunda terus. Saat perangkat selesai bicara, server
+mengirim tanda akhir audio ke Gemini. Jika stream berhenti tanpa tanda tersebut,
+server mengakhiri stream setelah jeda **1,2 detik**. Ini tidak menutup koneksi AI.
+
+Pada MQTT/UDP, paket yang tertukar urutannya ditunggu maksimal **120 ms** dengan
+antrean terbatas. Sebelum meneruskan `listen.stop`, gateway menunggu jendela yang
+sama agar paket akhir ucapan sempat masuk. Celah kecil pada audio diisi
+keheningan singkat; kata yang paketnya benar-benar hilang tidak dapat dipulihkan.
+Suara jawaban memakai buffer awal hingga **180 ms** untuk meredam keterlambatan
+pendek. Jika pengiriman benar-benar macet atau antrean melampaui batas, sesi
+diakhiri dengan `audio_backpressure` agar perangkat dapat membuka sesi baru.
+
+Untuk WebSocket suara, server mengirim **ping setiap 5 detik**. Jika tidak ada
+balasan **pong selama 30 detik**, server mengakhiri sesi, menutup koneksi AI,
+dan membersihkan timer serta antrean audio. Jeda ini memberi kesempatan koneksi
+yang sempat tersendat untuk pulih. Pemeriksaan jaringan tetap berjalan saat
+timeout standby disetel `0`; pong tidak dihitung sebagai pengguna berbicara.
+Saat perangkat dimatikan mendadak, deteksi bisa memerlukan jeda ini karena
+perangkat tidak sempat mengirim pesan penutupan.
+
+Pada MQTT, gateway memeriksa keepalive MQTT dan batas sesi audionya sendiri.
+Heartbeat WebSocket memeriksa sambungan gateway ke server; perangkat yang
+terputus dari gateway ditangani gateway. Batas sesi audio tanpa aktivitas
+di gateway secara bawaan dua menit, terpisah dari timeout standby.
+
+Log `session.status` muncul setiap 15 detik selama server masih menganggap sesi
+terbuka. `idle_ms` yang bertambah saat `timeout_ms=0` adalah catatan waktu diam,
+bukan countdown standby. `provider_ready=true` menunjukkan sesi AI siap,
+bukan bukti perangkat masih menyala. Setelah koneksi putus terdeteksi, cari
+`session.teardown` dan `device.disconnected`; log status sesi itu berhenti.
 
 ## Membaca notifikasi dari perangkat
 

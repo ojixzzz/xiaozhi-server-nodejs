@@ -70,6 +70,8 @@ Baris baru mempunyai penanda `trace` dan data JSON. Contoh ilustrasi:
 | Kejadian | Makna |
 | --- | --- |
 | `session.configured` | Backend, timeout efektif, asal timeout perangkat/server, dan ambang deteksi suara |
+| `device.heartbeat_started` / `device.heartbeat_timeout` | Ping WebSocket tiap 5 detik; 30 detik tanpa pong mengakhiri koneksi dan membersihkan sesi, termasuk saat timeout standby dimatikan |
+| `device.heartbeat_error` | Ping gagal ditulis; sesi dibersihkan dengan alasan `device_heartbeat_send_failed` |
 | `mcp.discovery_started` / `mcp.discovery_finished` | Lama penemuan tools dan hasil `completed`, `timeout`, `error`, `cancelled`, atau `backend_skipped` |
 | `mcp.rpc_request` / `mcp.rpc_response` / `mcp.rpc_timeout` | Cocokkan `rpc_id` untuk melihat request mana yang lambat/gagal; timeout tool lama berarti belum ada konfirmasi, bukan bukti tool berhasil |
 | `mcp.tools_available` / `mcp.endpoint_disconnected` | Discovery dan perubahan sambungan agent; `tools_apply_next_session` mempertahankan percakapan aktif dan memuat tools baru pada sesi berikutnya |
@@ -78,6 +80,12 @@ Baris baru mempunyai penanda `trace` dan data JSON. Contoh ilustrasi:
 | `gemini.socket_open` | Jalur jaringan ke Gemini terbuka; sesi belum tentu diterima |
 | `gemini.setup_accepted` / `provider.ready` | Gemini menerima konfigurasi dan perangkat dapat mulai mengirim audio |
 | `gemini.setup_timeout` | Setup belum selesai setelah 20 detik; ini terpisah dari timeout diam perangkat |
+| `gemini.audio_stream_ended` / `audio.input_ended` | Akhir audio telah dikirim setelah antrean mikrofon selesai, melalui `listen.stop` atau jeda stream 1,2 detik |
+| `gemini.resumption_updated` / `gemini.go_away` | Checkpoint pemulihan tersedia atau Gemini meminta pergantian koneksi; token checkpoint tidak dicatat |
+| `provider.resumption_rejected` | Checkpoint ditolak saat setup; percobaan berikutnya memakai sesi baru |
+| `audio.udp_stats` / `audio.input_gap` | Paket UDP diterima, diurutkan, terlambat/duplikat, hilang, atau celah audio yang diisi keheningan |
+| `audio.downlink_blocked` / `audio.downlink_recovered` | Antrean WebSocket keluar penuh lalu pulih; audio tidak terus ditambahkan ke socket yang macet |
+| `audio.downlink_overflow` | Antrean suara mencapai batas; sesi ditutup dengan alasan `audio_backpressure` |
 | `audio.first_packet` / `audio.speech_detected` | Audio perangkat masuk / level suara terdeteksi; bukan bukti ucapan berhasil dipahami |
 | `audio.output_started` / `audio.playback_drained` | Respons AI mulai diterima / antrean server selesai dikirim; bukan konfirmasi fisik speaker |
 | `tool.requested` / `tool.response_submitted` | Cocokkan `call_id` untuk melihat nama tool, jalur pemanggilan, lama proses, dan hasil gagal; argumen/isi hasil tidak disalin |
@@ -94,8 +102,15 @@ dan `holds`. `hold_remaining_ms` menunjukkan batas tunggu tiap pekerjaan.
 Misalnya timeout 60 detik tampil sebagai `60000`. Jika `paused=true`,
 timer masih menunggu pekerjaan dalam `holds`; `remaining_ms` bukan hitungan
 aktif selama penantian itu. Nilai `remaining_ms=null` berarti timeout dimatikan.
+`heartbeat.last_pong_age_ms` menunjukkan waktu sejak pong terakhir (atau sejak
+heartbeat dimulai jika belum ada pong). `heartbeat.pong_received` membedakan
+dua keadaan itu. Pong memeriksa jaringan dan tidak mereset hitungan diam.
 `buffer_dropped` menunjukkan paket PCM lama yang dibuang karena batas buffer
-saat AI belum siap. Ringkasan audio tidak menulis rekaman/base64, dan deteksi
+saat AI belum siap: maksimal 150 frame PCM 20 ms, dengan umur maksimal 3 detik.
+`playback_underruns` menunjukkan antrean suara sempat kosong sebelum respons
+selesai; `socket_buffered_bytes` menunjukkan data yang menunggu dikirim ke peer
+WebSocket. Pada MQTT, peer tersebut adalah gateway, bukan speaker perangkat.
+Ringkasan audio tidak menulis rekaman/base64, dan deteksi
 suara dibatasi satu log per 10 detik agar tidak menumpuk setiap paket.
 
 ## Saat perangkat terlalu cepat standby
@@ -118,6 +133,23 @@ Perubahan koneksi agent otomatis memakai `source=mcp_lifecycle` dan mempertahank
 percakapan, kecuali pencabutan akses yang memang harus mengakhiri sesi. Pada versi
 sebelumnya semua jalur ini memakai alasan umum `device_settings_changed`, sehingga
 log lama saja tidak dapat membedakan pemicunya.
+
+## Log masih muncul setelah perangkat dimatikan
+
+Jika `session.status` masih muncul, server belum mendeteksi sambungan putus.
+Saat daya dicabut, perangkat mungkin tidak sempat menutup WebSocket. Pada versi
+terbaru, `device.heartbeat_timeout` muncul setelah sekitar 30–35 detik tanpa pong,
+diikuti cleanup dengan `server_reason=device_heartbeat_timeout`. Timer status,
+timer diam, retry AI, dan antrean audio ikut dihentikan; koneksi AI ditutup.
+Koneksi yang ditutup normal dibersihkan langsung melalui event `close`.
+
+Nilai `timeout_ms=0`, `remaining_ms=null`, dan `stopped=false` berarti tracker
+diam masih melekat pada sesi terbuka, tetapi timer standby tidak dijadwalkan.
+`provider_ready=true` hanya menjelaskan sisi AI. Paket audio berjumlah `0`
+juga dapat terjadi ketika pengguna belum berbicara; gunakan heartbeat atau
+event penutupan untuk menilai koneksi. Jika menggunakan gateway MQTT, pong
+menunjukkan gateway masih terhubung ke relay; gateway memeriksa sambungan
+MQTT perangkat secara terpisah.
 
 ## Gemini menolak schema tool MCP
 
@@ -169,6 +201,11 @@ sent through Gemini's restricted `parameters` field. The server now uses
 `parametersJsonSchema`, preserving the original tool constraints. Update the
 deployed image and start a new conversation; `gemini.tool_schema_prepared`
 lists tool names, zero-based indexes, and schema formats without schema contents.
+Voice WebSockets now ping every 5 seconds and clean up after 30 seconds without
+a pong, independent of speech standby (`0` disables only speech standby).
+`heartbeat.last_pong_age_ms` measures network liveness; MQTT device liveness is
+checked separately by the gateway. Once teardown completes, session status
+logging, provider connections and per-session timers stop.
 `provider.closed` includes close code/reason and pending work. `session.status`
 reports idle state and audio counters every 15 seconds. Lifecycle tracing is
 enabled at `LOG_LEVEL=info`; `debug` adds control events and transcript character

@@ -43,6 +43,9 @@ const { AgentConnections } = require('./lib/agent-connections');
 const { McpEndpoint, MAX_PAYLOAD: MCP_ENDPOINT_MAX_PAYLOAD } = require('./lib/mcp-endpoint');
 const { VoiceIdleTimer, validateVoiceIdleSeconds, parseVoiceIdleSeconds, resolveVoiceIdleSeconds, parseVoiceActivityThreshold } = require('./lib/voice-idle');
 const { sanitizeLogValue, formatLogEntry, createSessionTrace } = require('./lib/session-trace');
+const { startSocketHeartbeat } = require('./lib/socket-heartbeat');
+const { LiveRecovery } = require('./lib/live-recovery');
+const { PacedAudioInput } = require('./lib/paced-audio-input');
 
 // Configuration
 const GEMINI_API_KEY = process.env.GEMINI_API_KEY;
@@ -1162,8 +1165,11 @@ wssXiaozhi.on('connection', (ws, req) => {
   let connectingProvider = null;
   let sessionStarting = false;
   let sessionClosed = false;
+  let deviceHeartbeat = null;
   let providerRetryTimer = null;
-  let providerRetries = 0;
+  const recovery = new LiveRecovery();
+  let resumptionState = null;
+  const toolHistory = new Map();
   let providerGeneration = 0;
   let providerToolAbort = null;
   let cancelMcpDiscovery = null;
@@ -1174,8 +1180,11 @@ wssXiaozhi.on('connection', (ws, req) => {
   let memoryTurns = null;
   let isSpeaking = false;
   let modelDone = false;
-  let audioBuffer = [];
   let audioOutputQueue = [];
+  let outputRemainder = Buffer.alloc(0);
+  let playbackPrimed = false;
+  let playbackReadyAt = 0;
+  let downlinkBlockedAt = null;
   let audioSendInterval = null;
   const FRAME_DURATION_MS = 60;
   let outputTranscriptionBuffer = '';
@@ -1183,7 +1192,13 @@ wssXiaozhi.on('connection', (ws, req) => {
   let finishReason = null;
   let lastSpeechLogAt = 0;
   const metrics = { input_packets: 0, pcm_frames: 0, speech_frames: 0, provider_audio_chunks: 0,
-    playback_packets: 0, buffer_dropped: 0, turns: 0, tool_calls: 0 };
+    playback_packets: 0, buffer_dropped: 0, input_gap_frames: 0, playback_underruns: 0, turns: 0, tool_calls: 0 };
+  const audioInput = new PacedAudioInput({
+    ready: () => Boolean(provider), send: chunk => provider?.sendAudio(chunk),
+    end: () => provider?.endAudio ? provider.endAudio() : true,
+    onDrop: count => { metrics.buffer_dropped += count; },
+    onEnd: () => trace.event('audio.input_ended', { reason: 'listen_stop_or_stream_gap' })
+  });
   let lastTtsTime = 0;
   let currentTtsDelay = 0;
   const voiceIdle = new VoiceIdleTimer({
@@ -1198,8 +1213,9 @@ wssXiaozhi.on('connection', (ws, req) => {
     activity_threshold: VOICE_ACTIVITY_THRESHOLD, selected_mcp_count: deviceConfig.enabled_mcp_devices?.length || 0 });
   const traceInterval = setInterval(() => {
     trace.event('session.status', { ...voiceIdle.snapshot(), metrics, provider_ready: Boolean(provider),
-      provider_starting: sessionStarting, retry_pending: Boolean(providerRetryTimer), buffered_frames: audioBuffer.length,
-      playback_queue: audioOutputQueue.length, speaking: isSpeaking });
+      provider_starting: sessionStarting, retry_pending: Boolean(providerRetryTimer), buffered_frames: audioInput.length,
+      playback_queue: audioOutputQueue.length, socket_buffered_bytes: ws.bufferedAmount,
+      speaking: isSpeaking, heartbeat: deviceHeartbeat?.snapshot() });
   }, 15000);
   traceInterval.unref();
 
@@ -1231,13 +1247,7 @@ wssXiaozhi.on('connection', (ws, req) => {
         trace.event('audio.speech_detected', { ...voiceIdle.snapshot(), pcm_bytes: pcmChunk.length });
       }
     }
-    if (provider) {
-      provider.sendAudio(pcmChunk);
-    } else {
-      audioBuffer.push(pcmChunk);
-      // Bound microphone buffering while the provider is starting/recovering.
-      if (audioBuffer.length > 50) { audioBuffer.shift(); metrics.buffer_dropped++; }
-    }
+    audioInput.push(pcmChunk);
   });
 
   decoder.on('error', err => { trace.event('audio.decode_error', { error: err }, 'error'); });
@@ -1245,6 +1255,10 @@ wssXiaozhi.on('connection', (ws, req) => {
   encoder.on('data', (opusChunk) => {
     if (sessionClosed) return;
     voiceIdle.hold('playback');
+    if (audioOutputQueue.length >= 1000) {
+      trace.event('audio.downlink_overflow', { queued_frames: audioOutputQueue.length }, 'warn');
+      finishVoiceSession('audio_backpressure'); return;
+    }
     audioOutputQueue.push(opusChunk);
     scheduleAudioSend();
   });
@@ -1254,10 +1268,34 @@ wssXiaozhi.on('connection', (ws, req) => {
     trace.event('audio.encode_error', { error: err }, 'error');
   });
 
+  function writeOutputAudio(audio, flush = false) {
+    const bytes = Buffer.concat([outputRemainder, audio]);
+    const fullBytes = bytes.length - bytes.length % 2880; // 60 ms PCM16 mono at 24 kHz
+    outputRemainder = Buffer.from(bytes.subarray(fullBytes));
+    for (let offset = 0; offset < fullBytes && !sessionClosed; offset += 2880) encoder.write(bytes.subarray(offset, offset + 2880));
+    if (flush && outputRemainder.length && !sessionClosed) {
+      const tail = Buffer.alloc(2880); outputRemainder.copy(tail);
+      outputRemainder = Buffer.alloc(0); encoder.write(tail);
+    }
+  }
+
   function scheduleAudioSend() {
     if (!audioSendInterval) {
       audioSendInterval = setInterval(() => {
+        if (sessionClosed || ws.readyState !== WebSocket.OPEN) return;
         const now = Date.now();
+        if (ws.bufferedAmount > 65536 || modelDone && audioOutputQueue.length === 0 && ws.bufferedAmount > 0) {
+          if (downlinkBlockedAt === null) {
+            downlinkBlockedAt = now;
+            trace.event('audio.downlink_blocked', { buffered_bytes: ws.bufferedAmount }, 'warn');
+          }
+          if (now - downlinkBlockedAt >= 15000) finishVoiceSession('audio_backpressure');
+          return;
+        }
+        if (downlinkBlockedAt !== null) {
+          trace.event('audio.downlink_recovered', { blocked_ms: now - downlinkBlockedAt });
+          downlinkBlockedAt = null;
+        }
         
         if (ttsTextQueue.length > 0 && now - lastTtsTime >= currentTtsDelay) {
           const textToSend = ttsTextQueue.shift();
@@ -1276,10 +1314,14 @@ wssXiaozhi.on('connection', (ws, req) => {
         }
 
         if (audioOutputQueue.length > 0) {
+          if (!playbackPrimed && audioOutputQueue.length < 3 && !modelDone && now < playbackReadyAt) return;
+          playbackPrimed = true;
           const chunkToSend = audioOutputQueue.shift();
           if (ws.readyState === WebSocket.OPEN) {
             voiceIdle.hold('playback');
-            ws.send(chunkToSend);
+            ws.send(chunkToSend, error => {
+              if (error && !sessionClosed) finishVoiceSession('audio_send_failed');
+            });
             metrics.playback_packets++;
             inboxAnnouncement?.audioSent();
           }
@@ -1298,6 +1340,11 @@ wssXiaozhi.on('connection', (ws, req) => {
             inboxAnnouncement?.playbackComplete().catch(error => trace.event('inbox.ack_failed', { error }, 'warn'));
           }
           modelDone = false;
+          playbackPrimed = false;
+        } else if (playbackPrimed) {
+          metrics.playback_underruns++;
+          playbackPrimed = false;
+          playbackReadyAt = now + 180;
         }
       }, FRAME_DURATION_MS);
     }
@@ -1319,6 +1366,7 @@ wssXiaozhi.on('connection', (ws, req) => {
     providerToolAbort?.abort();
     providerToolAbort = toolAbort;
     voiceIdle.start();
+    voiceIdle.hold('provider_setup');
     inboxAnnouncement?.discard();
     memoryTurns?.close();
     inboxAnnouncement = null;
@@ -1435,6 +1483,14 @@ wssXiaozhi.on('connection', (ws, req) => {
           config.apiKey = GEMINI_API_KEY;
           config.model = deviceConfig.gemini_model || GEMINI_MODEL;
           config.voice = deviceConfig.gemini_voice || GEMINI_VOICE;
+          // Saved memory grows between turns; a resumed session already owns
+          // that context. Reuse its original prompt only while settings/tools match.
+          config.resumptionSignature = JSON.stringify({ device: deviceConfig, tools: mcpTools });
+          if (resumptionState?.signature === config.resumptionSignature) {
+              config.resumptionHandle = resumptionState.handle;
+              config.prompt = resumptionState.prompt;
+          } else resumptionState = null;
+          if (!config.resumptionHandle) toolHistory.clear();
           newProvider = new GeminiProvider(config);
       } else if (activeBackend === 'qwen' || activeBackend === 'qwen_realtime' || activeBackend === 'qwen_omni') {
           config.apiKey = DASHSCOPE_API_KEY;
@@ -1473,6 +1529,13 @@ wssXiaozhi.on('connection', (ws, req) => {
       connectingProvider = newProvider;
       const pendingToolCalls = new Map();
       const isCurrentProvider = () => !sessionClosed && connectingProvider === newProvider;
+      newProvider.on('resumption_update', update => {
+          if (!isCurrentProvider()) return;
+          // Never restore a checkpoint across an unresolved tool side effect.
+          if (update.resumable && pendingToolCalls.size === 0) {
+              if (update.handle) resumptionState = { handle: update.handle, signature: config.resumptionSignature, prompt: config.prompt };
+          } else resumptionState = null;
+      });
       newProvider.on('diagnostic', diagnostic => {
           if (isCurrentProvider()) trace.event(diagnostic.event, { ...diagnostic, attempt });
       });
@@ -1482,6 +1545,7 @@ wssXiaozhi.on('connection', (ws, req) => {
           voiceIdle.hold('response');
           const call = pendingToolCalls.get(callId);
           pendingToolCalls.delete(callId);
+          if (toolHistory.has(callId)) toolHistory.set(callId, { name, response });
           let failed = false;
           try { const result = JSON.parse(response); failed = Boolean(result?.error || result?.isError); } catch {}
           trace.event('tool.response_submitted', { attempt, call_id: callId, tool: name, failed,
@@ -1502,8 +1566,10 @@ wssXiaozhi.on('connection', (ws, req) => {
           if (!isCurrentProvider()) { newProvider.close(); return; }
           voiceIdle.start();
           voiceIdle.resume();
+          recovery.connected();
           trace.event('provider.ready', { attempt, backend: activeBackend, model: config.model, voice: config.voice,
-            setup_ms: Math.round(performance.now() - attemptStarted), buffered_frames: audioBuffer.length });
+            setup_ms: Math.round(performance.now() - attemptStarted), buffered_frames: audioInput.length,
+            resumed: Boolean(config.resumptionHandle) });
           logger.info(`[${sessionId}] Connected to ${activeBackend} API`);
           if (ws.readyState === WebSocket.OPEN) {
               const payload = { type: 'listen', state: 'start', session_id: sessionId };
@@ -1513,16 +1579,7 @@ wssXiaozhi.on('connection', (ws, req) => {
           
           provider = newProvider;
           
-          process.nextTick(() => {
-              if (isCurrentProvider() && provider === newProvider && audioBuffer.length > 0) {
-                  const buffered = audioBuffer;
-                  audioBuffer = [];
-                  for (const chunk of buffered) {
-                      if (!isCurrentProvider()) break;
-                      newProvider.sendAudio(chunk);
-                  }
-              }
-          });
+          // PacedAudioInput drains unsent frames at 20 ms, never in a reconnect burst.
       });
 
       newProvider.on('audio_output', (audioBuf) => {
@@ -1530,12 +1587,15 @@ wssXiaozhi.on('connection', (ws, req) => {
           metrics.provider_audio_chunks++;
           voiceIdle.hold('response');
           voiceIdle.hold('playback');
+          modelDone = false;
           if (!isSpeaking) {
               isSpeaking = true;
+              playbackPrimed = false;
+              playbackReadyAt = Date.now() + 180;
               trace.event('audio.output_started', { attempt, first_chunk_bytes: audioBuf.length });
               ws.send(JSON.stringify({ type: 'tts', state: 'start', session_id: sessionId }));
           }
-          encoder.write(audioBuf);
+          writeOutputAudio(audioBuf);
       });
 
       newProvider.on('input_transcription', (text) => {
@@ -1567,6 +1627,7 @@ wssXiaozhi.on('connection', (ws, req) => {
 
       newProvider.on('turn_complete', () => {
           if (!isCurrentProvider()) return;
+          writeOutputAudio(Buffer.alloc(0), true);
           metrics.turns++;
           trace.event('provider.turn_complete', { attempt, turn: metrics.turns, playback_queue: audioOutputQueue.length });
           voiceIdle.release('response');
@@ -1596,11 +1657,23 @@ wssXiaozhi.on('connection', (ws, req) => {
           isSpeaking = false;
           modelDone = false;
           audioOutputQueue = [];
+          outputRemainder = Buffer.alloc(0);
+          playbackPrimed = false;
           ttsTextQueue = [];
       });
 
       newProvider.on('tool_call', (callId, name, args) => {
           if (!isCurrentProvider()) return;
+          resumptionState = null;
+          const previous = toolHistory.get(callId);
+          if (previous) {
+              newProvider.sendToolResponse(callId, name, previous.name === name && previous.response !== undefined ? previous.response :
+                JSON.stringify({ error: 'Previous execution status is unknown. Do not repeat this action automatically.' }));
+              return;
+          }
+          // Keep recent results across reconnects; never automatically re-run a tool ID.
+          if (toolHistory.size >= 256) toolHistory.delete(toolHistory.keys().next().value);
+          toolHistory.set(callId, { name });
           metrics.tool_calls++;
           pendingToolCalls.set(callId, { started: performance.now() });
           trace.event('tool.requested', { attempt, call_id: callId, tool: name,
@@ -1776,9 +1849,9 @@ wssXiaozhi.on('connection', (ws, req) => {
           trace.event('provider.closed', { attempt, backend: activeBackend, model: config.model, phase: wasReady ? 'ready' : 'setup',
             code: details.code, reason: details.reason || 'No close reason supplied', was_clean: details.wasClean,
             attempt_ms: Math.round(performance.now() - attemptStarted), pending_tools: [...pendingToolCalls.keys()],
-            buffered_frames: audioBuffer.length, playback_queue: audioOutputQueue.length, idle: voiceIdle.snapshot() }, 'warn');
-          // A provider failure is independent of speech inactivity. Keep the
-          // device channel open for the configured idle window, including 0.
+            buffered_frames: audioInput.length, playback_queue: audioOutputQueue.length, idle: voiceIdle.snapshot() }, 'warn');
+          // Keep the device channel during bounded recovery. Exhaustion closes
+          // voice even with standby disabled, rather than leaving a dead listener.
           provider = null;
           connectingProvider = null;
           providerGeneration++;
@@ -1786,8 +1859,10 @@ wssXiaozhi.on('connection', (ws, req) => {
           voiceIdle.resume();
           inboxAnnouncement?.discard();
           memoryTurns?.discard();
-          audioBuffer = [];
           audioOutputQueue = [];
+          outputRemainder = Buffer.alloc(0);
+          playbackPrimed = false;
+          if (pendingToolCalls.size) resumptionState = null;
           ttsTextQueue = [];
           outputTranscriptionBuffer = '';
           modelDone = false;
@@ -1798,19 +1873,25 @@ wssXiaozhi.on('connection', (ws, req) => {
           let reason = String(sanitizeLogValue(details.reason || 'No close reason supplied', [...logSecrets, expectedToken])).replace(/[\r\n]/g, ' ');
           reason = reason.slice(0, 1000);
           logger.warn(`[${sessionId}] Provider session closed: backend=${activeBackend} model=${config.model} phase=${wasReady ? 'ready' : 'setup'} code=${details.code ?? 'unknown'} reason=${reason}`);
-          const transient = details.retryable !== false && (details.code === undefined || [1000, 1001, 1006, 1011, 1012, 1013].includes(details.code));
-          if (activeBackend === 'gemini' && transient && providerRetries < 1) {
-              providerRetries++;
-              trace.event('provider.retry_scheduled', { attempt, retry: providerRetries, delay_ms: 1000, close_code: details.code });
-              logger.info(`[${sessionId}] Retrying Gemini connection in 1s (1/1)`);
+          if (config.resumptionHandle && !wasReady && [1007, 1008].includes(details.code)) {
+              resumptionState = null;
+              details = { ...details, retryable: true };
+              trace.event('provider.resumption_rejected', { attempt, fallback: 'fresh_session' }, 'warn');
+          }
+          const retry = activeBackend === 'gemini' ? recovery.next(details) : null;
+          if (retry) {
+              voiceIdle.hold('provider_reconnect');
+              trace.event('provider.retry_scheduled', { attempt, retry: retry.retry, delay_ms: retry.delayMs, close_code: details.code });
+              logger.info(`[${sessionId}] Retrying Gemini connection in ${retry.delayMs / 1000}s (${retry.retry}/5)`);
               providerRetryTimer = setTimeout(() => {
                   providerRetryTimer = null;
                   startSession();
-              }, 1000);
+              }, retry.delayMs);
               providerRetryTimer.unref();
           } else if (ws.readyState === WebSocket.OPEN) {
-              trace.event('provider.retry_skipped', { attempt, reason: transient ? 'retry_limit_or_backend' : 'non_transient_close' }, 'warn');
+              trace.event('provider.retry_skipped', { attempt, reason: 'retry_exhausted_or_non_transient' }, 'warn');
               ws.send(JSON.stringify({ type: 'error', session_id: sessionId, data: `AI connection closed (${details.code ?? 'unknown'}): ${reason}` }));
+              finishVoiceSession('provider_unavailable');
           }
       });
 
@@ -1833,6 +1914,7 @@ wssXiaozhi.on('connection', (ws, req) => {
       if (!sessionClosed) {
         voiceIdle.resume();
         if (ws.readyState === WebSocket.OPEN) ws.send(JSON.stringify({ type: 'error', session_id: sessionId, data: 'Could not start AI session. Check server logs and configuration.' }));
+        finishVoiceSession('provider_start_failed');
       }
     } finally {
       sessionStarting = false;
@@ -1932,6 +2014,21 @@ wssXiaozhi.on('connection', (ws, req) => {
           trace.event('device.listen_requested', { discovery_pending: mcpDiscoveryPending });
           // An explicit new listen request can retry after a provider failure.
           if (!mcpDiscoveryPending) startSession();
+        } else if (data.type === 'listen' && data.state === 'stop') {
+          trace.event('device.listen_stopped', { reason: 'device_request' });
+          audioInput.requestEnd();
+        } else if (data.type === 'audio_gap') {
+          const count = Math.min(5, Math.max(0, Number.isInteger(data.frames) ? data.frames : 0));
+          const duration = [10, 20, 40, 60].includes(data.frame_duration) ? data.frame_duration : 60;
+          metrics.input_gap_frames += count;
+          if (count) audioInput.push(Buffer.alloc(count * duration * 32));
+          trace.event('audio.input_gap', { frames: count, frame_duration: duration }, 'warn');
+        } else if (data.type === 'audio_transport_stats') {
+          const stats = {};
+          for (const key of ['received', 'forwarded', 'late', 'duplicates', 'reordered', 'missing', 'pending']) {
+            if (Number.isSafeInteger(data.stats?.[key]) && data.stats[key] >= 0) stats[key] = data.stats[key];
+          }
+          trace.event('audio.udp_stats', stats);
         } else if (data.type === 'abort') {
           trace.event('device.abort', { speaking: isSpeaking, playback_queue: audioOutputQueue.length });
           voiceIdle.release('response');
@@ -1952,6 +2049,8 @@ wssXiaozhi.on('connection', (ws, req) => {
           }
           modelDone = false;
           audioOutputQueue = [];
+          outputRemainder = Buffer.alloc(0);
+          playbackPrimed = false;
           ttsTextQueue = [];
         }
       } catch (e) { trace.event('device.message_error', { error: e }, 'warn'); }
@@ -1982,6 +2081,10 @@ wssXiaozhi.on('connection', (ws, req) => {
     trace.event('session.teardown', { reason: finishReason || 'device_disconnected', metrics });
     sessionClosed = true;
     clearInterval(traceInterval);
+    deviceHeartbeat?.stop();
+    audioInput.stop();
+    resumptionState = null;
+    toolHistory.clear();
     voiceIdle.stop();
     if (providerRetryTimer) clearTimeout(providerRetryTimer);
     providerRetryTimer = null;
@@ -1993,8 +2096,8 @@ wssXiaozhi.on('connection', (ws, req) => {
     (provider || connectingProvider)?.close();
     provider = null;
     connectingProvider = null;
-    audioBuffer = [];
     audioOutputQueue = [];
+    outputRemainder = Buffer.alloc(0);
     ttsTextQueue = [];
     outputTranscriptionBuffer = '';
     if (audioSendInterval) clearInterval(audioSendInterval);
@@ -2013,6 +2116,16 @@ wssXiaozhi.on('connection', (ws, req) => {
     if (!activeVoiceSockets.get(macAddress)?.size) activeVoiceSockets.delete(macAddress);
     logger.info(`[${sessionId}] Client disconnected`);
     mcpClients.delete(ws);
+  });
+
+  deviceHeartbeat = startSocketHeartbeat(ws, {
+    onEvent: (event, fields, level) => trace.event(event, fields, level),
+    onTimeout: reason => {
+      // Invalidate before terminating: don't wait for a dead peer's close reply
+      // to release Gemini, pending tools, audio buffers and session timers.
+      invalidateVoiceSession(reason);
+      ws.terminate();
+    }
   });
 
   // startGeminiSession(); // Removed immediate start

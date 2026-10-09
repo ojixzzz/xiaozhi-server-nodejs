@@ -63,6 +63,47 @@ This establishes the source-level close-to-standby behavior for that revision;
 this new timer has not been locally run or verified on the user's installed firmware.
 Ending a voice session does not change board shutdown/deep-sleep policy.
 
+Voice WebSockets also use protocol ping/pong: ping every 5 seconds, cleanup
+after 30 seconds without pong. This requires the peer's standard WebSocket pong
+response and is independent of microphone activity and disabled standby.
+It has not been tested locally on the installed firmware. With MQTT, this
+checks the gateway-to-relay link; the gateway handles the device's MQTT keepalive
+and its own audio-session limits.
+
+## Gemini Live recovery and audio buffering
+
+The relay exposes `gemini-3.8-live` in the model selector. Input is decoded to
+16 kHz mono PCM16 and paced in 20 ms chunks; output is 24 kHz mono PCM16 encoded
+to 60 ms Opus packets. Unsent microphone audio is limited to three seconds and
+never flushed as a burst after reconnect. `listen.stop` or a 1.2-second input
+gap sends `audioStreamEnd` after the buffered input. End-of-turn output tails
+are padded to a complete Opus frame and partial output is discarded on abort.
+
+The MQTT gateway holds out-of-order UDP packets for up to 120 ms (32 packets
+maximum), suppresses duplicates, and reports missing sequences. Short gaps are
+represented by at most five silent input frames, not reconstructed speech or
+Opus FEC. MQTT `listen.stop` waits 120 ms for trailing UDP before finalizing.
+Late audio after stop is discarded until a new `listen.start`.
+
+Playback primes up to 180 ms. The relay pauses sends above 64 KiB of WebSocket
+backlog and closes voice after 15 seconds of persistent blockage, or when the
+application queue reaches 1,000 Opus frames. These limits concern relay-to-peer
+writes; they cannot confirm that UDP audio was played by the hardware.
+
+Gemini transient errors retry up to five times with 1/2/4/8/15-second delays;
+30 seconds of stable readiness resets the retry budget. Exhaustion and permanent
+errors close voice even with speech standby disabled. Session resumption and
+GoAway are handled; checkpoints are cleared around unresolved tool calls and
+recent tool results are retained within a resumed session to avoid repeating
+side effects. Invalid checkpoints fall back to a fresh session. Setup still has
+a 20-second timeout per attempt. Resumption tokens stay in memory and are cleared
+at teardown. See the official [audio guide](https://ai.google.dev/gemini-api/docs/live-api/capabilities)
+and [session management](https://ai.google.dev/gemini-api/docs/live-api/session-management).
+
+Regression coverage was added for pacing, end-of-stream, retry exhaustion,
+resumption, and UDP reordering. Local tests/builds and physical-device network
+tests were not run for this change.
+
 ## Spotpear 1.28 Box power caveat
 
 For the specific board at

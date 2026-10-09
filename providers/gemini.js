@@ -1,6 +1,7 @@
 const LLMProvider = require('./base');
 const { performance } = require('node:perf_hooks');
 const { GoogleGenAI } = require('@google/genai');
+const { transientError } = require('../lib/live-recovery');
 
 class GeminiProvider extends LLMProvider {
     constructor(config) {
@@ -11,6 +12,8 @@ class GeminiProvider extends LLMProvider {
         this.ready = false;
         this.cancelConnect = null;
         this.pendingMessages = [];
+        this.goAwayTimer = null;
+        this.finish = null;
     }
 
     async connect(tools) {
@@ -20,6 +23,8 @@ class GeminiProvider extends LLMProvider {
         this.emit('diagnostic', { event: 'gemini.sdk_connect', model: this.config.model, setup_timeout_ms: 20000 });
         const sessionConfig = {
             responseModalities: ['audio'],
+            sessionResumption: this.config.resumptionHandle ? { handle: this.config.resumptionHandle } : {},
+            contextWindowCompression: { slidingWindow: {} },
             speechConfig: {
                 voiceConfig: {
                     prebuiltVoiceConfig: {
@@ -71,9 +76,12 @@ class GeminiProvider extends LLMProvider {
             this.ready = false;
             this.session = null;
             this.pendingMessages = [];
+            clearTimeout(this.goAwayTimer);
+            this.goAwayTimer = null;
             ended();
             this.emit('close', details);
         };
+        this.finish = finish;
         const timeout = setTimeout(() => {
             const session = this.session;
             this.emit('diagnostic', { event: 'gemini.setup_timeout', duration_ms: Math.round(performance.now() - started),
@@ -106,6 +114,8 @@ class GeminiProvider extends LLMProvider {
                             const failure = new Error(error?.message || cause?.message || 'Gemini WebSocket error', { cause });
                             failure.code = cause?.code;
                             this.emit('error', failure);
+                            this.disconnect({ code: 1006, reason: failure.message,
+                                retryable: !/\b(400|401|403|404)\b|invalid.*(key|model)/i.test(failure.message) });
                         }
                     },
                     onclose: (event) => {
@@ -134,7 +144,7 @@ class GeminiProvider extends LLMProvider {
             if (!this.closed) {
                 this.emit('error', new Error(`Failed to connect to Gemini: ${e.message}`, { cause: e }));
                 const session = this.session;
-                finish({ reason: e.message, retryable: false });
+                finish({ reason: e.message, retryable: transientError(e) });
                 session?.close();
             }
         } finally {
@@ -145,6 +155,20 @@ class GeminiProvider extends LLMProvider {
 
     handleMessage(response) {
         if (this.closed) return;
+        if (response.sessionResumptionUpdate) {
+            const update = response.sessionResumptionUpdate;
+            this.emit('resumption_update', { resumable: update.resumable === true, handle: update.newHandle });
+            this.emit('diagnostic', { event: 'gemini.resumption_updated', resumable: update.resumable === true });
+        }
+        if (response.goAway) {
+            const value = response.goAway.timeLeft;
+            const milliseconds = typeof value === 'string' && /^\d+(?:\.\d+)?s$/.test(value) ? parseFloat(value) * 1000 : 1000;
+            const delay = Math.max(0, Math.min(milliseconds - 1000, 120000));
+            this.emit('diagnostic', { event: 'gemini.go_away', reconnect_in_ms: delay });
+            clearTimeout(this.goAwayTimer);
+            this.goAwayTimer = setTimeout(() => this.disconnect({ code: 1012, reason: 'Gemini GoAway', retryable: true }), delay);
+            this.goAwayTimer.unref?.();
+        }
         if (response.serverContent) {
             const content = response.serverContent;
             
@@ -185,10 +209,33 @@ class GeminiProvider extends LLMProvider {
                         data: pcmChunk.toString('base64')
                     }
                 });
+                return true;
             } catch (e) {
                 this.emit('error', new Error(`Error sending audio to Gemini: ${e.message}`, { cause: e }));
+                this.disconnect({ code: 1006, reason: e.message, retryable: true });
             }
         }
+        return false;
+    }
+
+    endAudio() {
+        if (!this.ready || !this.session) return false;
+        try {
+            this.session.sendRealtimeInput({ audioStreamEnd: true });
+            this.emit('diagnostic', { event: 'gemini.audio_stream_ended' });
+            return true;
+        } catch (error) {
+            this.emit('error', new Error(`Error ending Gemini audio: ${error.message}`, { cause: error }));
+            this.disconnect({ code: 1006, reason: error.message, retryable: true });
+            return false;
+        }
+    }
+
+    disconnect(details) {
+        if (this.closed) return;
+        const session = this.session;
+        this.finish?.(details);
+        session?.close();
     }
 
     sendToolResponse(callId, name, resultText) {
@@ -203,6 +250,7 @@ class GeminiProvider extends LLMProvider {
                 });
             } catch (e) {
                 this.emit('error', new Error(`Error sending tool response to Gemini: ${e.message}`, { cause: e }));
+                this.disconnect({ code: 1006, reason: e.message, retryable: true });
             }
         }
     }
@@ -222,6 +270,8 @@ class GeminiProvider extends LLMProvider {
         this.closed = true;
         this.ready = false;
         this.pendingMessages = [];
+        clearTimeout(this.goAwayTimer);
+        this.goAwayTimer = null;
         this.cancelConnect?.();
         const session = this.session;
         this.session = null;
