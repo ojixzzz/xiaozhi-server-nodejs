@@ -39,7 +39,7 @@ The application uses `DATA_DIR/notifications.sqlite`, separately from
 thread. No SQLite or filesystem call is placed on the audio event loop.
 
 Schema 2 introduced [internal reminders](reminders.en.md) in the same database so due
-occurrences, inbox messages and schedule advancement commit atomically. Schema 3 adds skip-once, calendar delivery timelines and separate screen-break sessions.
+occurrences, inbox messages and schedule advancement commit atomically. Schema 3 adds skip-once, calendar delivery timelines and separate Pomodoro sessions.
 Schema-1/2 inboxes migrate transactionally and retain existing messages. Back up the stopped
 server's data volume before deployment; older versions cannot open schema 3.
 Reminder pause/snooze/completion suppress the associated chimes. Device quiet

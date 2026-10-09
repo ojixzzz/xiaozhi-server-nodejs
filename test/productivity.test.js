@@ -130,63 +130,125 @@ test('v2 migration preserves existing schedules, occurrences and old read/beep s
   assert.equal(f.sql(db => db.prepare('PRAGMA user_version').get().user_version),3);
 });
 
-test('screen announcements are sent once, never enter inbox and ignored announcements leave interval anchored', async t => {
+test('Pomodoro changes phases automatically, publishes once and never enters inbox', async t => {
   const f = fixture(t); await f.call('screen_command',{action:'start',request_key:'start'});
-  const s = screenService(f); f.advance(30*60000); await s.service.tick();
+  const s = screenService(f); f.advance(25*60000); await s.service.tick();
   assert.equal(s.announcements.length,1); assert.equal((await f.store.list('a')).unreadCount,0);
-  const after = await f.call('screen_get'); assert.equal(after.session.state,'working'); assert.equal(after.session.next_at,f.now + 30*60000);
+  const after = await f.call('screen_get'); assert.equal(after.session.state,'resting');
+  assert.equal(after.session.completed_focus,1); assert.equal(after.session.rest_until,f.now+5*60000);
+  assert.equal(s.calls[0][2],5); assert.equal(s.calls[0][3],false);
   await s.service.tick(); assert.equal(s.announcements.length,1);
   await s.service.close(); await f.reopen(); const fresh = screenService(f); await fresh.service.tick();
   assert.equal(fresh.announcements.length,0);
-  f.advance(30*60000); await fresh.service.tick(); assert.equal(fresh.announcements.length,1); await fresh.service.close();
+  f.advance(5*60000); await fresh.service.tick(); assert.equal(fresh.announcements.length,1);
+  assert.equal(fresh.calls[0][0],'break_end');
+  assert.equal((await f.call('screen_get')).session.next_at,f.now+25*60000);
+  await fresh.service.close();
 });
 
-test('confirmed rest produces an end announcement and starts the next interval from rest completion', async t => {
-  const f = fixture(t); await f.call('screen_command',{action:'start'}); f.advance(30*60000);
-  await f.call('screen_tick'); await f.call('screen_command',{action:'rest',minutes:2,request_key:'rest'});
-  const rest = await f.call('screen_get'); f.advance(30000);
-  assert.equal((await f.call('screen_command',{action:'rest',minutes:2,request_key:'rest'})).session.rest_until,rest.session.rest_until);
-  await f.reopen(); f.advance(90000); const due = await f.call('screen_tick');
-  assert.equal(due.events.length,1); assert.equal(due.events[0].kind,'break_end'); assert.equal(due.session.next_at,f.now + 30*60000);
+test('four completed focus sessions produce a long rest and reset the block afterward', async t => {
+  const f = fixture(t); await f.call('screen_command',{action:'start'});
+  for (let cycle=1; cycle<=4; cycle++) {
+    f.advance(25*60000); const result=await f.call('screen_tick');
+    assert.equal(result.session.completed_focus,cycle); assert.equal(result.session.total_focus,cycle);
+    assert.equal(result.events[0].rest_minutes,cycle===4?20:5);
+    assert.equal(result.events[0].long_rest,cycle===4);
+    f.advance((cycle===4?20:5)*60000); const end=await f.call('screen_tick');
+    assert.equal(end.session.state,'working'); assert.equal(end.session.completed_focus,cycle===4?0:cycle);
+    assert.equal(end.session.next_at,f.now+25*60000);
+  }
   assert.equal((await f.store.list('a')).notifications.length,0);
+});
+
+test('custom Pomodoro settings validate bounds and support a long rest after every focus', async t => {
+  const f=fixture(t); await f.call('screen_update',{interval_minutes:5,rest_minutes:1,long_rest_minutes:60,cycles_before_long_rest:1});
+  for (const input of [{interval_minutes:4},{rest_minutes:31},{long_rest_minutes:61},{cycles_before_long_rest:0},{cycles_before_long_rest:13}]) await assert.rejects(f.call('screen_update',input));
+  await f.call('screen_command',{action:'start'});f.advance(5*60000);
+  const due=await f.call('screen_tick');assert.equal(due.session.rest_until,f.now+60*60000);assert.equal(due.events[0].long_rest,true);
+  await f.reopen(); assert.equal((await f.call('screen_get')).session.rest_kind,'long');
+});
+
+test('pause freezes focus and rest across restart, with retry keys retaining later commands', async t => {
+  const f=fixture(t);await f.call('screen_command',{action:'start'});f.advance(10*60000);
+  const paused=await f.call('screen_command',{action:'pause',request_key:'pause-focus'});
+  assert.equal(paused.session.remaining_ms,15*60000);assert.equal(paused.session.paused_state,'working');
+  await f.reopen();f.advance(30*60000);assert.deepEqual((await f.call('screen_tick')).events,[]);
+  const resumed=await f.call('screen_command',{action:'resume',request_key:'resume'});
+  assert.equal(resumed.session.next_at,f.now+15*60000);
+  f.advance(15*60000);await f.call('screen_tick');f.advance(60000);
+  await f.call('screen_command',{action:'pause',request_key:'pause-rest'});f.advance(10*60000);await f.reopen();
+  assert.equal((await f.call('screen_get')).session.remaining_ms,4*60000);
+  const rest=await f.call('screen_command',{action:'resume'});assert.equal(rest.session.rest_until,f.now+4*60000);
   await f.call('screen_command',{action:'stop',request_key:'stop'});
+  assert.equal((await f.call('screen_command',{action:'pause',request_key:'pause-rest'})).session.state,'idle');
+  await assert.rejects(f.call('screen_command',{action:'start',request_key:'pause-rest'}),{code:'REMINDER_CONFLICT'});
+});
+
+test('skip and early rest do not credit focus; manual commands do not create extra announcements', async t => {
+  const f=fixture(t);await f.call('screen_command',{action:'start'});
+  let result=await f.call('screen_command',{action:'skip'});
+  assert.equal(result.session.state,'resting');assert.equal(result.session.total_focus,0);
+  result=await f.call('screen_command',{action:'skip'});assert.equal(result.session.state,'working');
   await f.call('screen_command',{action:'rest',minutes:2,request_key:'rest'});
-  assert.equal((await f.call('screen_get')).session.state,'idle','retry of an earlier command cannot undo a later stop');
+  const rest=await f.call('screen_get');f.advance(30000);
+  assert.equal((await f.call('screen_command',{action:'rest',minutes:2,request_key:'rest'})).session.rest_until,rest.session.rest_until);
+  await f.reopen();f.advance(90000);const due=await f.call('screen_tick');
+  assert.equal(due.events.length,1);assert.equal(due.events[0].kind,'break_end');assert.equal(due.session.total_focus,0);
+  assert.equal(due.session.next_at,f.now+25*60000);
 });
 
 test('offline and quiet announcements are skipped once; a busy conversation waits until expiry', async t => {
-  const f = fixture(t); await f.call('screen_command',{action:'start'}); f.advance(30*60000);
-  const offline = screenService(f,{online:() => false}); await offline.service.tick();
-  assert.equal(offline.calls.length,0); assert.equal((await f.call('screen_history')).events[0].reason,'device_offline'); await offline.service.close();
-  f.advance(30*60000); await f.call('settings_update',{quiet_enabled:true,quiet_start:'00:00',quiet_end:'23:59'});
-  const quiet = screenService(f); await quiet.service.tick(); assert.equal(quiet.calls.length,0);
-  assert.equal((await f.call('screen_history')).events[0].reason,'quiet_hours'); await quiet.service.close();
-  await f.call('settings_update',{quiet_enabled:false}); f.advance(30*60000);
-  let busy = true; const active = screenService(f,{busy:() => busy}); await active.service.tick();
+  const f=fixture(t);await f.call('screen_command',{action:'start'});f.advance(25*60000);
+  const offline=screenService(f,{online:()=>false});await offline.service.tick();
+  assert.equal(offline.calls.length,0);assert.equal((await f.call('screen_history')).events[0].reason,'device_offline');await offline.service.close();
+  f.advance(5*60000);await f.call('settings_update',{quiet_enabled:true,quiet_start:'00:00',quiet_end:'23:59'});
+  const quiet=screenService(f);await quiet.service.tick();assert.equal(quiet.calls.length,0);
+  assert.equal((await f.call('screen_history')).events[0].reason,'quiet_hours');await quiet.service.close();
+  await f.call('settings_update',{quiet_enabled:false});f.advance(25*60000);
+  let busy=true;const active=screenService(f,{busy:()=>busy});await active.service.tick();
   assert.equal((await f.call('screen_history')).events[0].status,'pending');
-  f.advance(120000); busy = false; await active.service.tick(); assert.equal(active.calls.length,0);
-  assert.equal((await f.call('screen_history')).events[0].reason,'expired'); await active.service.close();
+  f.advance(120000);busy=false;await active.service.tick();assert.equal(active.calls.length,0);
+  assert.equal((await f.call('screen_history')).events[0].reason,'expired');await active.service.close();
 });
 
 test('a claimed announcement interrupted by restart stays unknown and is never replayed', async t => {
-  const f = fixture(t); await f.call('screen_command',{action:'start'}); f.advance(30*60000);
-  const due = await f.call('screen_tick'), event = due.events[0];
+  const f=fixture(t);await f.call('screen_command',{action:'start'});f.advance(25*60000);
+  const event=(await f.call('screen_tick')).events[0];
   assert.equal((await f.call('screen_claim',{id:event.id,revision:event.revision})).allowed,true);
-  await f.reopen(); f.advance(120000);
-  const s = screenService(f); await s.service.tick();
-  assert.equal(s.announcements.length,0); assert.equal((await f.call('screen_history')).events[0].status,'unknown'); await s.service.close();
+  await f.reopen();f.advance(120000);const s=screenService(f);await s.service.tick();
+  assert.equal(s.announcements.length,0);assert.equal((await f.call('screen_history')).events[0].status,'unknown');await s.service.close();
 });
 
-test('snooze, skip, stop and settings changes invalidate pending announcements', async t => {
-  const f = fixture(t); await f.call('screen_command',{action:'start'}); f.advance(30*60000);
-  const old = (await f.call('screen_tick')).events[0];
-  await f.call('screen_command',{action:'snooze',minutes:5});
-  assert.equal((await f.call('screen_claim',{id:old.id,revision:old.revision})).allowed,false);
-  assert.equal((await f.call('screen_get')).session.next_at,f.now+5*60000);
-  f.advance(5*60000); await f.call('screen_tick'); const next = (await f.call('screen_get')).session.next_at;
-  await f.call('screen_command',{action:'skip'}); assert.equal((await f.call('screen_get')).session.next_at,next);
-  await f.call('screen_update',{interval_minutes:45}); assert.equal((await f.call('screen_get')).session.next_at,f.now+45*60000);
-  await f.call('screen_command',{action:'stop'}); f.advance(60*60000); assert.deepEqual((await f.call('screen_tick')).events,[]);
+test('snooze, skip, pause, stop and settings changes invalidate pending announcements', async t => {
+  const f=fixture(t);await f.call('screen_command',{action:'start'});
+  await f.call('screen_command',{action:'snooze',minutes:5});assert.equal((await f.call('screen_get')).session.next_at,f.now+5*60000);
+  f.advance(5*60000);const old=(await f.call('screen_tick')).events[0];
+  await f.call('screen_command',{action:'pause'});assert.equal((await f.call('screen_claim',{id:old.id,revision:old.revision})).allowed,false);
+  await f.call('screen_command',{action:'resume'});await f.call('screen_command',{action:'skip'});
+  await f.call('screen_update',{interval_minutes:45});assert.equal((await f.call('screen_get')).session.next_at,f.now+45*60000);
+  await f.call('screen_command',{action:'stop'});f.advance(60*60000);assert.deepEqual((await f.call('screen_tick')).events,[]);
+});
+
+test('a long outage advances only one phase and never fabricates completed cycles', async t => {
+  const f=fixture(t);await f.call('screen_command',{action:'start'});await f.reopen();f.advance(3*60*60000);
+  let result=await f.call('screen_tick');assert.equal(result.session.total_focus,1);assert.equal(result.session.state,'resting');
+  assert.equal(result.session.rest_until,f.now+5*60000);assert.deepEqual(result.events,[]);
+  assert.equal((await f.call('screen_history')).events[0].reason,'expired');
+  f.advance(60*60000);result=await f.call('screen_tick');assert.equal(result.session.total_focus,1);
+  assert.equal(result.session.next_at,f.now+25*60000);assert.deepEqual(result.events,[]);
+});
+
+test('legacy interval settings upgrade once and invalidate pending audio without touching inbox', async t => {
+  const f=fixture(t);await f.call('screen_update',{interval_minutes:30,rest_minutes:2});await f.call('screen_command',{action:'start'});
+  f.advance(30*60000);await f.call('screen_tick');await f.store.enqueue('a',{sender:'agent',text:'Keep me'});
+  f.sql(db=>db.prepare("UPDATE screen_break_settings SET session=json_remove(session,'$.pomodoro_version')").run());
+  await f.reopen();let result=await f.call('screen_get');
+  assert.equal(result.settings.interval_minutes,25);assert.equal(result.settings.rest_minutes,5);assert.equal(result.session.state,'idle');
+  assert.equal((await f.call('screen_history')).events[0].reason,'pomodoro_upgrade');assert.equal((await f.store.list('a')).unreadCount,1);
+  await f.call('screen_command',{action:'start'});await f.reopen();result=await f.call('screen_get');assert.equal(result.session.state,'working');
+  await f.call('screen_update',{interval_minutes:45,rest_minutes:7});
+  f.sql(db=>db.prepare("UPDATE screen_break_settings SET session=json_remove(session,'$.pomodoro_version')").run());
+  assert.equal((await f.call('screen_get')).settings.interval_minutes,45);
 });
 
 test('active windows support midnight and auto start once, stop prevents restart in the same window', async t => {
@@ -206,7 +268,7 @@ test('restart in a later active window does not resume a manual work session or 
 });
 
 test('a settings change while TTS is being prepared prevents publishing an obsolete announcement', async t => {
-  const f = fixture(t);await f.call('screen_command',{action:'start'});f.advance(30*60000);
+  const f = fixture(t);await f.call('screen_command',{action:'start'});f.advance(25*60000);
   let release,prepared;
   const ready = new Promise(resolve=>{prepared=resolve;});const generated = new Promise(resolve=>{release=resolve;});let published=0;
   const reminders=createReminderService({inbox:f.store,deviceIds:()=>['a'],allowed:()=>true,beep:async()=>({status:'not_published'})});
@@ -227,4 +289,21 @@ test('voice tools isolate devices and deduplicate commands without creating remi
   const small = createReminderTools({service,deviceId:'a',allowed:()=>true,requestScope:()=> 'small-voice',maxChars:512});
   const output = await small('screen_breaks_session',{action:'stop'});
   assert.equal(output.session.state,'idle');assert.equal(output.error,undefined);assert.ok(JSON.stringify(output).length<=512);
+});
+
+test('long rest pause/resume and skip retain total focus and reset block progress', async t => {
+  const f=fixture(t);await f.call('screen_update',{interval_minutes:5,cycles_before_long_rest:1});
+  await f.call('screen_command',{action:'start'});f.advance(5*60000);await f.call('screen_tick');
+  f.advance(2*60000);await f.call('screen_command',{action:'pause'});await f.reopen();f.advance(10*60000);
+  const resumed=await f.call('screen_command',{action:'resume'});assert.equal(resumed.session.rest_kind,'long');
+  assert.equal(resumed.session.rest_until,f.now+18*60000);
+  const skipped=await f.call('screen_command',{action:'skip'});assert.equal(skipped.session.completed_focus,0);
+  assert.equal(skipped.session.total_focus,1);assert.equal(skipped.session.next_at,f.now+5*60000);
+});
+
+test('a paused timer stops at the end of its active window and does not carry into the next day', async t => {
+  const f=fixture(t);await f.call('screen_update',{active_end:'08:30'});await f.call('screen_command',{action:'start'});
+  f.advance(10*60000);await f.call('screen_command',{action:'pause'});f.advance(20*60000);
+  const ended=await f.call('screen_tick');assert.equal(ended.session.state,'idle');assert.equal(ended.session.remaining_ms,null);
+  f.advance(3*86400000-30*60000);assert.equal((await f.call('screen_tick')).session.state,'idle');
 });

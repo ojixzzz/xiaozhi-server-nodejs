@@ -1,52 +1,69 @@
-# Istirahat layar dengan Edge TTS
+# Pomodoro dengan Edge TTS
 
 [Beranda](../README.md) · [English](screen-breaks.en.md) · [Pengingat dan kalender](reminders.md)
 
-XiaoZhi dapat mengumumkan waktu istirahat langsung lewat speaker ketika perangkat
-standby: “Yuk, istirahat layar sebentar. Luangkan 2 menit untuk beristirahat.”
-Pengumuman ini **tidak masuk inbox**, tidak memiliki status read, dan tidak
-diulang untuk kejadian yang sama.
+Pomodoro membantu membagi waktu menjadi sesi fokus dan istirahat. XiaoZhi
+membacakan pergantian fase melalui **Edge TTS**, satu kali per pergantian.
+Pengumuman ini **tidak masuk inbox**, tidak memiliki status read, dan tidak diulang.
 
 ## Mulai dari dashboard
 
-1. Buka **Xiaozhi Devices → Pengingat → Istirahat layar**.
-2. Atur interval kerja, durasi istirahat, jam/hari aktif, dan bahasa pengumuman.
-3. Klik **Simpan istirahat layar**, kemudian **Mulai kerja**.
-4. Gunakan **Mulai istirahat**, **Kembali kerja**, **Tunda…**, **Lewati sekali**,
-   atau **Selesai kerja** sesuai kebutuhan.
+1. Buka **Xiaozhi Devices → Pengingat → Pomodoro**.
+2. Atur durasi fokus, istirahat pendek, istirahat panjang, dan jumlah sesi sebelum
+   istirahat panjang. Simpan juga jam/hari aktif serta bahasa pengumuman.
+3. Tekan **Mulai Pomodoro**. Fokus dan istirahat selanjutnya berganti otomatis.
 
-Default: kerja **30 menit**, istirahat **2 menit**, **Senin–Jumat 08.00–17.00**,
-bahasa Indonesia, mulai otomatis **nonaktif**. Interval dapat diatur **5–240 menit**
-dan durasi istirahat **1–30 menit**. Semua jam memakai zona waktu perangkat di
-panel Pengingat. Jam aktif yang melewati tengah malam mengikuti hari mulainya.
+Default: **fokus 25 menit → istirahat 5 menit**. Setelah **4 sesi fokus selesai**,
+istirahat menjadi **20 menit**, lalu hitungan blok kembali ke nol. Total sesi
+selesai tetap terlihat hingga memulai blok baru. Contoh mulai 09.00: istirahat
+09.25–09.30, fokus lagi 09.30–09.55. Istirahat panjang pertama 10.55–11.15.
 
-Aktifkan **Mulai otomatis** jika ingin sesi dimulai pada rentang jam aktif tanpa
-perintah suara. Sesi dimulai saat server pertama kali memeriksa rentang tersebut,
-bukan mengejar interval yang sudah lewat. **Selesai kerja** mencegah mulai otomatis
-lagi pada rentang jam yang sama. Di luar jam aktif sesi otomatis berhenti.
+Batas pengaturan: fokus **5–240 menit**, istirahat pendek **1–30 menit**,
+istirahat panjang **1–60 menit**, **1–12 sesi** sebelum istirahat panjang.
+Jam aktif default **Senin–Jumat 08.00–17.00**, bahasa Indonesia, mulai otomatis
+**nonaktif**. Semua waktu memakai zona waktu perangkat. Rentang yang melintasi
+tengah malam mengikuti hari mulainya.
 
-## Lewat suara
+## Kontrol dashboard dan suara
 
-Gunakan Gemini dengan perangkat approved dan token perangkat sendiri. Setelah
-update server, buka percakapan baru agar tools baru dimuat.
-
-| Ucapan | Perilaku |
+| Kontrol / contoh ucapan | Hasil |
 | --- | --- |
-| “Mulai kerja, ingatkan istirahat layar setiap 30 menit” | Simpan interval lalu mulai sesi |
-| “Ubah interval istirahat jadi 45 menit” | Mengatur ulang interval kerja aktif dari sekarang |
-| “Mulai istirahat” | Memulai jeda sesuai durasi tersimpan |
-| “Istirahat lima menit” | Jeda lima menit untuk sesi ini |
-| “Kembali kerja” | Mengakhiri jeda dan menghitung interval kerja baru |
-| “Tunda lima menit” | Pengumuman berikutnya lima menit dari sekarang |
-| “Lewati kali ini” | Lewati ajakan terbaru atau kejadian berikutnya jika belum ada ajakan baru |
-| “Selesai kerja” | Menghentikan sesi dan pengumuman yang menunggu |
+| Mulai Pomodoro / “Mulai Pomodoro” | Mulai blok baru; jika sudah fokus, timer tetap |
+| Jeda timer / “Jeda Pomodoro” | Bekukan sisa waktu fokus atau istirahat |
+| Lanjutkan / “Lanjutkan Pomodoro” | Teruskan fase yang dijeda dengan sisa waktu yang sama |
+| Lanjutkan saat istirahat / “Kembali fokus” | Akhiri istirahat lebih awal dan mulai fokus |
+| Mulai istirahat / “Istirahat lima menit” | Istirahat lebih awal; tidak menghitung fokus sebagai selesai |
+| Tunda akhir fokus / “Tunda akhir fokus lima menit” | Akhir fokus menjadi lima menit dari sekarang; hanya saat fokus |
+| Lewati fase / “Lewati fase Pomodoro” | Fokus → istirahat, atau istirahat → fokus; fokus yang dilewati tidak dihitung selesai |
+| Hentikan / “Hentikan Pomodoro” | Hentikan sesi hingga dimulai lagi |
+| “Atur Pomodoro fokus 40 menit, istirahat 10 menit” | Simpan durasi melalui tool internal |
 
-Contoh: mulai kerja **09.00** → ajakan istirahat **09.30**. Tanpa respons,
-pengumuman berikutnya tetap **10.00**. Jika mulai istirahat dua menit pada 09.30,
-pengumuman jeda selesai pada **09.32**, lalu ajakan berikutnya **10.02**.
-Sapaan “halo” dan pengumuman yang dibacakan tidak dianggap memulai istirahat.
-Jika server melewati akhir jeda saat mati, interval kerja baru dihitung dari
-waktu server kembali memproses sesi; tidak ada tumpukan ajakan lama.
+Sapaan tidak mengubah timer. Pengumuman bukan bukti pengguna benar-benar
+beristirahat; timer otomatis menghitung fase yang selesai menurut jadwal.
+Perintah manual dikonfirmasi melalui percakapan, tanpa pengumuman tambahan.
+Untuk memakai kontrol suara, buka percakapan baru setelah memperbarui server.
+
+Simpan pengaturan mengatur ulang durasi fase aktif (atau sisa fase yang dijeda).
+Mengubah jumlah siklus mengatur ulang hitungan blok. Mulai otomatis berjalan
+sekali per rentang aktif dari saat server pertama memeriksanya. Hentikan mencegah
+mulai otomatis lagi pada rentang yang sama. Sesi berhenti di luar jam/hari aktif,
+termasuk sesi yang dijeda; tidak dilanjutkan otomatis pada hari berikutnya kecuali
+mulai otomatis diaktifkan.
+
+## Restart dan pembaruan
+
+Sisa fase, hitungan siklus, jeda, serta riwayat pengiriman disimpan di SQLite.
+Restart saat dijeda mempertahankan sisa waktunya. Jika server mati lama tetapi
+masih pada rentang aktif yang sama, server maju **satu fase** dan memberi fase
+berikutnya durasi penuh dari waktu pemrosesan. Tidak membuat banyak fokus selesai
+atau memutar tumpukan pengumuman yang terlewat. Pengumuman lebih dari dua menit
+terlambat dilewati.
+
+Timer interval dari versi lama diubah menjadi Pomodoro sekali. Sesi lama dihentikan
+beserta pengumuman yang belum dikirim; tekan Mulai Pomodoro lagi. Pasangan default
+lama **30/2 menit** menjadi **25/5 menit**; pasangan durasi lain tetap tersimpan.
+Istirahat panjang default 20 menit setelah 4 sesi. Pembaruan ini menggunakan tabel
+schema 3 yang sudah ada, tanpa menaikkan versi schema.
 
 ## Perangkat dan koneksi
 
@@ -83,7 +100,7 @@ shell atau token di field tersebut; keduanya hanya path executable.
 - Percakapan aktif: tunggu selesai, paling lama **2 menit dari waktu terjadwal**.
 - Perangkat offline atau gateway belum tersedia: **lewati**, tanpa antrean untuk
   dibacakan saat perangkat kembali online.
-- Jam tenang: **lewati pengumuman**, sementara interval tetap berjalan.
+- Jam tenang: **lewati pengumuman**, sementara siklus fokus/istirahat tetap berjalan.
 - Edge TTS gagal: lewati kejadian itu dan catat `tts_unavailable`.
 - Pengiriman sudah dimulai lalu server restart atau respons hilang: status
   **belum terkonfirmasi**, tanpa mencoba ulang kejadian yang sama.
@@ -102,8 +119,8 @@ Semua rute memakai login admin, perangkat approved bertoken sendiri, dan prefix
 | Method / path | Isi |
 | --- | --- |
 | GET `screen-breaks` | Pengaturan, status sesi, waktu berikutnya, zona waktu |
-| PUT `screen-breaks` | `interval_minutes`, `rest_minutes`, `active_start`, `active_end`, `weekdays`, `auto_start`, `language` |
-| POST `screen-breaks/command` | `action`: start/stop/rest/resume/snooze/skip; `minutes` untuk rest/snooze; `request_key` stabil |
+| PUT `screen-breaks` | `interval_minutes` (fokus), `rest_minutes` (pendek), `long_rest_minutes`, `cycles_before_long_rest`, `active_start`, `active_end`, `weekdays`, `auto_start`, `language` |
+| POST `screen-breaks/command` | `action`: start/stop/rest/pause/resume/snooze/skip; `minutes` untuk rest/snooze; `request_key` stabil |
 | GET `screen-breaks/history` | Riwayat; `limit` 1–50, `offset` 0–1000 |
 
 Tools suara: `screen_breaks_settings` (action get/update), `screen_breaks_session`.

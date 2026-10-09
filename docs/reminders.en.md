@@ -53,7 +53,7 @@ Older stored status is labeled legacy_snapshot; unavailable history is not
 invented. Publication never implies confirmed speaker playback. Timelines keep
 up to 100 recent delivery events per notification plus key storage/read events.
 For direct spoken announcements without inbox messages, see
-[screen breaks with Edge TTS](screen-breaks.en.md).
+[Pomodoro with Edge TTS](screen-breaks.en.md).
 
 The scheduler checks at startup and every second. Offline devices retain inbox
 messages. After server downtime, a missed one-off fires; a recurring schedule
@@ -68,7 +68,7 @@ the schedule; marking read does not free capacity. Device deletion removes its
 schedules/settings/history; unapproved devices are not processed.
 
 Voice tools: `reminders_create/list/get/update/cancel/snooze/complete/settings`,
-`reminders_agenda`, `reminders_skip`, `reminders_trace`, plus screen break tools.
+`reminders_agenda`, `reminders_skip`, `reminders_trace`, plus Pomodoro tools.
 They derive device scope from authentication, return untrusted data and use the
 configured inbox tool budget. Tool list/get pages contain up to 5 records;
 inspect `has_more`/`truncated`. Pause/resume uses update status `paused`/`active`.

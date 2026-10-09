@@ -2165,12 +2165,14 @@
         <p class="help-text">Pilih Jejak pengiriman pada agenda atau riwayat. Gateway menerima perintah belum membuktikan audio terdengar; firmware belum memberi konfirmasi pemutaran.</p>
         <ol id="deliveryTrace"></ol>
       </section>
-      <section aria-label="Istirahat layar">
-        <h4>Istirahat layar · Edge TTS</h4>
-        <p class="help-text">Pengumuman suara langsung satu kali, tanpa pesan inbox. Memerlukan MQTT, URL audio yang dapat diakses perangkat, serta internet untuk Edge TTS pertama kali. Jika offline, jam tenang, atau terlambat lebih dari 2 menit, pengumuman dilewati. Sapaan tidak memulai istirahat.</p>
+      <section aria-label="Pomodoro">
+        <h4>Pomodoro · Edge TTS</h4>
+        <p class="help-text">Pengumuman suara langsung satu kali, tanpa pesan inbox. Memerlukan MQTT, URL audio yang dapat diakses perangkat, serta internet untuk Edge TTS pertama kali. Jika offline, jam tenang, atau terlambat lebih dari 2 menit, pengumuman dilewati. Fokus dan istirahat berganti otomatis; sapaan tidak mengubah timer.</p>
         <form id="screenForm" class="reminder-grid">
-          <label>Interval kerja (menit)<input id="screenInterval" type="number" min="5" max="240" value="30" required></label>
-          <label>Durasi istirahat (menit)<input id="screenRest" type="number" min="1" max="30" value="2" required></label>
+          <label>Durasi fokus (menit)<input id="screenInterval" type="number" min="5" max="240" value="25" required></label>
+          <label>Istirahat pendek (menit)<input id="screenRest" type="number" min="1" max="30" value="5" required></label>
+          <label>Istirahat panjang (menit)<input id="screenLongRest" type="number" min="1" max="60" value="20" required></label>
+          <label>Sesi fokus sebelum istirahat panjang<input id="screenCycles" type="number" min="1" max="12" value="4" required></label>
           <label>Jam aktif mulai<input id="screenStart" type="time" value="08:00" required></label>
           <label>Jam aktif berakhir<input id="screenEnd" type="time" value="17:00" required></label>
           <fieldset><legend>Hari aktif (hari mulai jika melewati tengah malam)</legend><div class="reminder-weekdays">
@@ -2178,11 +2180,11 @@
           </div></fieldset>
           <label>Bahasa pengumuman<select id="screenLanguage"><option value="id">Indonesia</option><option value="en">English</option></select></label>
           <label><input id="screenAuto" type="checkbox"> Mulai otomatis sekali pada setiap rentang jam aktif</label>
-          <button type="submit">Simpan istirahat layar</button>
+          <button type="submit">Simpan Pomodoro</button>
         </form>
         <p id="screenSession" role="status" aria-live="polite"></p>
-        <div class="reminder-actions"><button type="button" id="screenWork">Mulai kerja</button><button type="button" id="screenTakeRest">Mulai istirahat</button><button type="button" id="screenResume">Kembali kerja</button><button type="button" id="screenSnooze">Tunda…</button><button type="button" id="screenSkip">Lewati sekali</button><button type="button" id="screenStop">Selesai kerja</button></div>
-        <p class="help-text">Tanpa respons, pengumuman berikutnya mengikuti interval semula. Jika mulai istirahat, interval berikutnya dihitung setelah jeda selesai. Perubahan pengaturan mengatur ulang interval sesi kerja aktif.</p>
+        <div class="reminder-actions"><button type="button" id="screenWork">Mulai Pomodoro</button><button type="button" id="screenTakeRest">Mulai istirahat</button><button type="button" id="screenPause">Jeda timer</button><button type="button" id="screenResume">Lanjutkan</button><button type="button" id="screenSnooze">Tunda akhir fokus…</button><button type="button" id="screenSkip">Lewati fase</button><button type="button" id="screenStop">Hentikan</button></div>
+        <p class="help-text">Fokus 25 menit → istirahat 5 menit. Setelah 4 sesi fokus selesai, istirahat panjang 20 menit. Jeda membekukan sisa waktu; lanjutkan meneruskan fase yang dijeda atau kembali fokus jika sedang istirahat. Lewati fase tidak menghitung fokus yang dilewati sebagai selesai. Simpan pengaturan mengatur ulang durasi fase aktif.</p>
         <ul id="screenHistory" class="reminder-list"></ul>
       </section>
       <button type="button" id="productivityRefresh">Muat ulang agenda &amp; sesi</button>

@@ -44,7 +44,9 @@ test('TTS failure leaves no reusable partial file and the next request can gener
 test('announcements are restricted to fixed supported phrases and durations', () => {
   assert.match(announcementText('break_due','id',2),/2 menit/);
   assert.match(announcementText('break_end','en',2),/break is over/);
-  for (const args of [['custom','id',2],['break_due','xx',2],['break_due','id',31]]) assert.throws(()=>announcementText(...args),TypeError);
+  assert.match(announcementText('break_due','id',20,true),/istirahat panjang selama 20 menit/);
+  assert.match(announcementText('break_due','en',60,true),/long break for 60 minutes/);
+  for (const args of [['custom','id',2],['break_due','xx',2],['break_due','id',61],['break_due','id',5,'yes']]) assert.throws(()=>announcementText(...args),TypeError);
 });
 
 test('CI runtime can invoke Edge CLI and convert MP3 to the device Opus format without calling Microsoft', async t => {

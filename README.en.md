@@ -34,9 +34,9 @@ their feature support differs. Model availability depends on your provider accou
   one-offs, with voice snooze/completion and all-inbox quiet hours. See the
   [reminder guide](docs/reminders.en.md), including skip-once, calendar agenda
   and delivery timelines.
-- Screen breaks with direct Edge TTS announcements, configurable intervals and
-  active hours, without inbox messages or repeated announcements. See the
-  [screen break guide](docs/screen-breaks.en.md).
+- Pomodoro with direct Edge TTS: focus 25 minutes, short rest 5, long rest 20
+  after 4 completed focus sessions. Configure durations and active hours, without inbox messages or repeated announcements. See the
+  [Pomodoro guide](docs/screen-breaks.en.md).
 - Optional memory of completed Gemini turns and administrator-entered notes.
   It starts disabled and is shared by everyone using that device.
 - A persistent text inbox that retains messages even while the device is offline.

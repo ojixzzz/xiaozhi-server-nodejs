@@ -91,8 +91,8 @@ terdengar. Status dari versi server lama ditandai `legacy_snapshot`; jejak lama
 yang tidak pernah direkam tidak dibuat-buat. Jejak menyimpan hingga 100 kejadian
 pengiriman terbaru per notif, ditambah kejadian penting penyimpanan/read.
 
-Istirahat layar memiliki panel dan tools tersendiri: **pengumuman Edge TTS sekali,
-tanpa pesan inbox**. Lihat [panduan istirahat layar](screen-breaks.md).
+Pomodoro memiliki panel dan tools tersendiri: **pengumuman Edge TTS sekali,
+tanpa pesan inbox**. Lihat [panduan Pomodoro](screen-breaks.md).
 
 ## Offline, restart, dan batas
 
@@ -120,7 +120,7 @@ bukti speaker sudah memutarnya; mekanisme unread mencoba ulang sesuai interval.
 Tools internal: `reminders_create`, `reminders_list`, `reminders_get`,
 `reminders_update`, `reminders_cancel`, `reminders_snooze`, `reminders_complete`,
 `reminders_settings`, `reminders_agenda`, `reminders_skip`, dan `reminders_trace`.
-Tools istirahat: `screen_breaks_settings` dan `screen_breaks_session`. Identitas perangkat selalu berasal dari sesi suara; tools
+Tools Pomodoro: `screen_breaks_settings` dan `screen_breaks_session`. Identitas perangkat selalu berasal dari sesi suara; tools
 tidak menerima `device_id`. Hasil adalah data tidak tepercaya, bukan instruksi.
 Tool list/get dibatasi 5 item per halaman dan budget hasil inbox yang dikonfigurasi;
 Agenda menerima offset 0–100000; kalender menghitung seluruh interval dalam rentang.

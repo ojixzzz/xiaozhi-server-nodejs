@@ -335,7 +335,7 @@ test('internal reminder tools, admin management and all-inbox quiet hours share 
   assert.equal(f.rows().filter(row => row.sender === '@xiaozhi-reminders').length, 1);
 });
 
-test('screen-break voice tools and dashboard send audio once through MQTT, without inbox insertion', { timeout: 30000 }, async t => {
+test('Pomodoro voice tools and dashboard send audio once through MQTT, without inbox insertion', { timeout: 30000 }, async t => {
   const f = await fixture(t,{ fakeScreenTts:true });
   const config = await f.selectMqtt(MAC,UUID), device = await f.connect(config);
   const minute = new Date(Date.now()+420*60000).getUTCHours()*60 + new Date(Date.now()+420*60000).getUTCMinutes();
@@ -357,6 +357,13 @@ test('screen-break voice tools and dashboard send audio once through MQTT, witho
     return result.body.events?.[0]?.status === 'published' ? result.body : false;
   },'screen announcement result persisted');
   assert.equal(history.playback_acknowledgement,false);
+  const pomodoro=(await f.request(`/api/devices/${MAC}/screen-breaks`)).body;
+  assert.equal(pomodoro.session.state,'resting');assert.equal(pomodoro.session.completed_focus,1);
+  assert.equal(pomodoro.settings.long_rest_minutes,20);assert.equal(pomodoro.settings.cycles_before_long_rest,4);
+  const paused=await f.request(`/api/devices/${MAC}/screen-breaks/command`,{method:'POST',body:'{"action":"pause"}'});
+  assert.equal(paused.body.session.state,'paused');assert.equal(paused.body.session.paused_state,'resting');
+  const resumed=await f.request(`/api/devices/${MAC}/screen-breaks/command`,{method:'POST',body:'{"action":"resume"}'});
+  assert.equal(resumed.body.session.state,'resting');
   assert.equal((await f.request(`/api/devices/${SHARED_MAC}/screen-breaks`)).status,403);
   const noCsrf = {Cookie:f.headers.Cookie,'Content-Type':'application/json'};
   assert.equal((await f.request(`/api/devices/${MAC}/screen-breaks/command`,{method:'POST',headers:noCsrf,body:'{"action":"stop"}'})).status,403);

@@ -280,7 +280,8 @@ Buka **Xiaozhi Devices → Pengingat** untuk melihat kalender dan melewati satu
 kejadian tanpa mengubah jadwal rutin. Pilih **Jejak pengiriman** untuk mengetahui
 apa yang terjadi pada pengingat; detail inbox juga memiliki jejak pesan agent.
 
-Panel **Istirahat layar** mengatur interval kerja, durasi jeda, jam/hari aktif dan
-bahasa. Klik **Mulai kerja**, atau minta melalui suara. Pengumuman Edge TTS
-langsung tidak masuk inbox dan tidak diulang. Default 30 menit kerja / 2 menit
-istirahat; mulai otomatis nonaktif. Lihat [panduan lengkap](screen-breaks.md).
+Panel **Pomodoro** mengatur fokus, istirahat pendek/panjang, jumlah sesi,
+jam/hari aktif dan bahasa pengumuman. Default fokus 25 menit, istirahat 5 menit,
+lalu istirahat panjang 20 menit setelah 4 fokus selesai. Fase berganti otomatis;
+jeda/lanjutkan mempertahankan sisa waktu. Mulai otomatis nonaktif. Pengumuman
+Edge TTS tidak masuk inbox dan tidak diulang. Lihat [panduan lengkap](screen-breaks.md).

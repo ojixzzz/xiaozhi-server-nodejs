@@ -5,7 +5,7 @@ const fs = require('node:fs');
 const path = require('node:path');
 const vm = require('node:vm');
 const script = fs.readFileSync(path.join(__dirname,'../public/productivity.js'),'utf8');
-const settings = {interval_minutes:30,rest_minutes:2,active_start:'08:00',active_end:'17:00',weekdays:[1,2,3,4,5],auto_start:false,language:'id'};
+const settings = {interval_minutes:25,rest_minutes:5,long_rest_minutes:20,cycles_before_long_rest:4,active_start:'08:00',active_end:'17:00',weekdays:[1,2,3,4,5],auto_start:false,language:'id'};
 const view = {settings,session:{state:'idle'},timezone_offset_minutes:420,next_local:null,rest_until_local:null};
 function fixture(handler) {
   const nodes = new Map(), requests = [];
@@ -34,7 +34,7 @@ test('a late screen-break response from a closed device cannot overwrite the cur
   let release;const f=fixture(url=>url.endsWith('/a/screen-breaks')?new Promise(resolve=>{release=resolve;}):empty(url));
   const first=f.window.XiaozhiProductivity.open('a');await f.window.XiaozhiProductivity.open('b');
   release({...view,settings:{...settings,interval_minutes:120}});await first;
-  assert.equal(f.$('screenInterval').value,30);f.window.XiaozhiProductivity.close();
+  assert.equal(f.$('screenInterval').value,25);f.window.XiaozhiProductivity.close();
 });
 
 test('an uncertain command retry retains its key and writes only the device-scoped session API', async()=>{
@@ -64,5 +64,18 @@ test('agenda renders user text safely and skips the exact selected occurrence wi
   li.children[2].children[0].listeners.click();await f.flush();
   assert.deepEqual(skipped,{id:row.reminder_id,due_at:row.due_at});
   assert.ok(!f.requests.some(r=>r.method==='PATCH'));
+  f.window.XiaozhiProductivity.clear();
+});
+
+test('dashboard exposes Pomodoro durations, cycle progress and pause/resume controls', async()=>{
+  const active={...view,session:{state:'paused',paused_state:'resting',remaining_ms:240000,completed_focus:4,total_focus:8,rest_kind:'long'}};
+  const actions=[];const f=fixture((url,options)=>{
+    if(options.method==='POST'){actions.push(JSON.parse(options.body).action);return active;}
+    return url.endsWith('/screen-breaks')?active:empty(url);
+  });
+  await f.window.XiaozhiProductivity.open('a');
+  assert.equal(f.$('screenLongRest').value,20);assert.equal(f.$('screenCycles').value,4);
+  assert.match(f.$('screenSession').textContent,/4\/4/);assert.match(f.$('screenSession').textContent,/Sisa: 4 menit/);
+  f.click('screenPause');await f.flush();f.click('screenResume');await f.flush();assert.deepEqual(actions,['pause','resume']);
   f.window.XiaozhiProductivity.clear();
 });

@@ -6,11 +6,11 @@
   const attempts = new Map();
   const labels = { upcoming: 'Terjadwal', pending: 'Belum selesai', snoozed: 'Ditunda', completed: 'Selesai', cancelled: 'Dibatalkan', skipped: 'Dilewati',
     stored: 'Tersimpan di inbox', due: 'Waktunya tiba', read: 'Dibaca', beep_published: 'Beep dikirim ke gateway', beep_deferred: 'Beep belum dikirim', beep_unknown: 'Pengiriman belum terkonfirmasi',
-    snooze_due: 'Waktu tunda tiba', paused: 'Jadwal dijeda', resumed: 'Jadwal dilanjutkan', working: 'Sedang kerja', resting: 'Sedang istirahat', idle: 'Belum mulai',
-    published: 'Dikirim ke gateway', unknown: 'Belum terkonfirmasi', claimed: 'Pengiriman dimulai', break_due: 'Ajakan istirahat', break_end: 'Jeda selesai' };
+    snooze_due: 'Waktu tunda tiba', paused: 'Jadwal dijeda', resumed: 'Jadwal dilanjutkan', working: 'Fokus', resting: 'Istirahat', idle: 'Belum mulai',
+    published: 'Dikirim ke gateway', unknown: 'Belum terkonfirmasi', claimed: 'Pengiriman dimulai', break_due: 'Istirahat dimulai', break_end: 'Fokus dimulai' };
   const reasons = { quiet_hours: 'jam tenang', device_offline: 'perangkat offline / koneksi gateway tidak tersedia', device_offline_or_busy: 'perangkat belum siap atau percakapan aktif',
     tts_unavailable: 'Edge TTS belum tersedia', expired: 'melewati batas keterlambatan 2 menit', outside_active_hours: 'di luar jam aktif', user_skipped: 'dilewati pengguna',
-    user_snoozed: 'ditunda pengguna', user_stopped: 'sesi kerja dihentikan', rest_started: 'istirahat dimulai', gateway_published: 'gateway menerima perintah pemutaran',
+    settings_changed: 'pengaturan berubah', session_changed: 'sesi berubah', inactive: 'timer tidak aktif', work_resumed: 'fokus dilanjutkan', phase_changed: 'fase berganti', pomodoro_upgrade: 'timer lama diganti Pomodoro', user_paused: 'timer dijeda', user_snoozed: 'ditunda pengguna', user_stopped: 'sesi kerja dihentikan', rest_started: 'istirahat dimulai', gateway_published: 'gateway menerima perintah pemutaran',
     publication_unconfirmed: 'hasil pengiriman belum diketahui', legacy_snapshot: 'status terakhir dari versi server sebelumnya', missed_occurrences_coalesced: 'kejadian terlambat digabungkan' };
   const node = (tag, text = '') => { const e = document.createElement(tag); e.textContent = text; return e; };
   const current = s => s === session;
@@ -92,10 +92,13 @@
     const v = data.settings;
     s.offset = data.timezone_offset_minutes;
     $('screenInterval').value = v.interval_minutes; $('screenRest').value = v.rest_minutes;
+    $('screenLongRest').value = v.long_rest_minutes; $('screenCycles').value = v.cycles_before_long_rest;
     $('screenStart').value = v.active_start; $('screenEnd').value = v.active_end;
     $('screenAuto').checked = v.auto_start; $('screenLanguage').value = v.language;
     document.querySelectorAll('[name=screenWeekday]').forEach(e => { e.checked = v.weekdays.includes(Number(e.value)); });
-    $('screenSession').textContent = `${labels[data.session.state]} · Berikutnya: ${data.next_local || '-'} · Jeda selesai: ${data.rest_until_local || '-'}`;
+    const phase = data.session.state === 'paused' ? `Timer dijeda (${labels[data.session.paused_state]})` : data.session.state === 'resting' && data.session.rest_kind === 'long' ? 'Istirahat panjang' : labels[data.session.state];
+    const remaining = data.session.state === 'paused' ? ` · Sisa: ${Math.ceil(data.session.remaining_ms / 60000)} menit` : '';
+    $('screenSession').textContent = `${phase} · Fokus selesai: ${data.session.completed_focus || 0}/${v.cycles_before_long_rest} · Total: ${data.session.total_focus || 0}${remaining} · Fokus berakhir: ${data.next_local || '-'} · Istirahat berakhir: ${data.rest_until_local || '-'}`;
   }
   async function screen(s) {
     const data = await request(s, 'screen-breaks'); if (!current(s)) return; renderScreen(s,data);
@@ -110,14 +113,14 @@
       const bytes = crypto.getRandomValues(new Uint8Array(16)); attempts.set(key, [...bytes].map(n => n.toString(16).padStart(2,'0')).join(''));
     }
     await request(s, 'screen-breaks/command', 'POST', { ...body, request_key: attempts.get(key) }); attempts.delete(key);
-    if (current(s)) { await screen(s); $('productivityStatus').textContent = 'Sesi istirahat layar diperbarui.'; }
+    if (current(s)) { await screen(s); $('productivityStatus').textContent = 'Sesi Pomodoro diperbarui.'; }
   }
   async function refresh(s) { await screen(s); if (current(s)) { await calendar(s); await agenda(s); } }
   async function open(mac) {
     close(); const s = { mac, controllers: new Set(), busy: false, offset: 420, agendaOffset: 0 }; session = s;
     $('screenSession').textContent = '';
-    $('screenInterval').value = 30; $('screenRest').value = 2; $('screenStart').value = '08:00'; $('screenEnd').value = '17:00'; $('screenAuto').checked = false; $('screenLanguage').value = 'id';
-    $('productivityStatus').textContent = 'Memuat agenda dan istirahat layar…';
+    $('screenInterval').value = 25; $('screenRest').value = 5; $('screenLongRest').value = 20; $('screenCycles').value = 4; $('screenStart').value = '08:00'; $('screenEnd').value = '17:00'; $('screenAuto').checked = false; $('screenLanguage').value = 'id';
+    $('productivityStatus').textContent = 'Memuat agenda dan Pomodoro…';
     for (const id of ['agendaList','agendaCalendar','screenHistory','deliveryTrace']) $(id).replaceChildren();
     await action(async s => {
       await screen(s); if (!current(s)) return;
@@ -127,13 +130,14 @@
   }
   $('screenForm').addEventListener('submit', event => { event.preventDefault(); action(async s => {
     const data = await request(s,'screen-breaks','PUT',{ interval_minutes: Number($('screenInterval').value), rest_minutes: Number($('screenRest').value),
+      long_rest_minutes: Number($('screenLongRest').value), cycles_before_long_rest: Number($('screenCycles').value),
       active_start: $('screenStart').value, active_end: $('screenEnd').value, auto_start: $('screenAuto').checked, language: $('screenLanguage').value,
       weekdays: [...document.querySelectorAll('[name=screenWeekday]:checked')].map(e => Number(e.value)) });
-    if (current(s)) { renderScreen(s,data); $('productivityStatus').textContent = 'Pengaturan istirahat tersimpan.'; }
+    if (current(s)) { renderScreen(s,data); $('productivityStatus').textContent = 'Pengaturan Pomodoro tersimpan.'; }
   }); });
-  for (const [id,name] of [['screenWork','start'],['screenStop','stop'],['screenTakeRest','rest'],['screenResume','resume'],['screenSkip','skip']]) $(id).addEventListener('click', () => action(s => command(s,name)));
+  for (const [id,name] of [['screenWork','start'],['screenStop','stop'],['screenTakeRest','rest'],['screenPause','pause'],['screenResume','resume'],['screenSkip','skip']]) $(id).addEventListener('click', () => action(s => command(s,name)));
   $('screenSnooze').addEventListener('click', () => action(async s => {
-    const answer = prompt('Tunda berapa menit?', '5'); if (answer === null) return;
+    const answer = prompt('Akhiri fokus berapa menit dari sekarang?', '5'); if (answer === null) return;
     if (!/^\d+$/.test(answer) || Number(answer) < 1 || Number(answer) > 240) throw new Error('Isi 1 sampai 240 menit.');
     await command(s,'snooze',Number(answer));
   }));

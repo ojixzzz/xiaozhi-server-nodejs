@@ -67,4 +67,4 @@ penjelasan fiturnya tersedia di panduan Indonesia di atas.
 lengkap. Online berarti perangkat atau server lain benar-benar tersambung.
 Keduanya belum membuktikan suara terdengar di speaker.
 
-- [Istirahat layar dengan Edge TTS](screen-breaks.md) · [English](screen-breaks.en.md).
+- [Pomodoro dengan Edge TTS](screen-breaks.md) · [English](screen-breaks.en.md).

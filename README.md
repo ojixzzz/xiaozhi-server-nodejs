@@ -35,9 +35,9 @@ berbeda. Memiliki adapter tidak menjamin model tersedia pada akun provider Anda.
   tunda/selesai lewat suara, kelola di dashboard, serta jam tenang untuk semua inbox.
   Lewati satu kejadian, lihat agenda kalender, dan periksa jejak pengirimannya.
   Lihat [panduan pengingat](docs/reminders.md).
-- **Istirahat layar:** pengumuman suara Edge TTS langsung, tanpa inbox atau pengulangan.
-  Atur interval, jam/hari aktif, dan durasi di dashboard atau lewat suara.
-  Lihat [panduan istirahat layar](docs/screen-breaks.md).
+- **Pomodoro:** pengumuman suara Edge TTS langsung, tanpa inbox atau pengulangan.
+  Fokus 25 menit, istirahat 5 menit, panjang 20 menit setelah 4 sesi; dapat diatur lewat dashboard atau suara.
+  Lihat [panduan Pomodoro](docs/screen-breaks.md).
 - **Memori opsional:** menyimpan percakapan Gemini yang selesai dan catatan yang
   Anda masukkan. Awalnya nonaktif; memori dibagi oleh semua pengguna perangkat itu.
 - **Inbox notifikasi:** menyimpan pesan dari agent, termasuk ketika perangkat offline.

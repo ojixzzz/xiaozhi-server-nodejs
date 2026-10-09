@@ -206,7 +206,7 @@ the relay/gateway do not fetch, transcode or proxy it. See
 and optional offline FFmpeg conversion commands.
 
 Internal [reminders](reminders.en.md) have a persistent scheduler, and
-[screen breaks](screen-breaks.en.md) synthesize fixed announcements through Edge TTS.
+[Pomodoro](screen-breaks.en.md) synthesize fixed announcements through Edge TTS.
 A subtitle is display text, not synthesized speech. To hear a spoken
 manual audio notification, provide a recording containing those words. For
 incoming agent notifications, the normal flow is a fixed beep followed by Gemini
