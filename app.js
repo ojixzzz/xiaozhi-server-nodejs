@@ -50,6 +50,7 @@ const { sanitizeLogValue, formatLogEntry, createSessionTrace } = require('./lib/
 const { startSocketHeartbeat } = require('./lib/socket-heartbeat');
 const { LiveRecovery } = require('./lib/live-recovery');
 const { PacedAudioInput } = require('./lib/paced-audio-input');
+const { createAudioInputDiagnostics } = require('./lib/audio-input-diagnostics');
 
 // Configuration
 const GEMINI_API_KEY = process.env.GEMINI_API_KEY;
@@ -1243,7 +1244,8 @@ wssXiaozhi.on('connection', (ws, req) => {
     maxChars: inboxToolMaxChars
   });
   const metrics = { input_packets: 0, pcm_frames: 0, speech_frames: 0, provider_audio_chunks: 0,
-    playback_packets: 0, buffer_dropped: 0, input_gap_frames: 0, playback_underruns: 0, turns: 0, tool_calls: 0 };
+    playback_packets: 0, buffer_dropped: 0, input_gap_frames: 0, input_gap_ms: 0, playback_underruns: 0, turns: 0, tool_calls: 0 };
+  const inputDiagnostics = createAudioInputDiagnostics({ trace });
   const audioInput = new PacedAudioInput({
     ready: () => Boolean(provider), send: chunk => provider?.sendAudio(chunk),
     end: () => provider?.endAudio ? provider.endAudio() : true,
@@ -2088,17 +2090,19 @@ wssXiaozhi.on('connection', (ws, req) => {
           trace.event('device.listen_stopped', { reason: 'device_request' });
           audioInput.requestEnd();
         } else if (data.type === 'audio_gap') {
-          const count = Math.min(5, Math.max(0, Number.isInteger(data.frames) ? data.frames : 0));
+          const missing = Number.isSafeInteger(data.frames) && data.frames > 0 ? Math.min(data.frames, 0xffffffff) : 0;
+          const count = Math.min(5, missing);
           const duration = [10, 20, 40, 60].includes(data.frame_duration) ? data.frame_duration : 60;
-          metrics.input_gap_frames += count;
+          metrics.input_gap_frames += missing;
+          metrics.input_gap_ms += missing * duration;
           if (count) audioInput.push(Buffer.alloc(count * duration * 32));
-          trace.event('audio.input_gap', { frames: count, frame_duration: duration }, 'warn');
+          inputDiagnostics.gap(missing, duration, count);
         } else if (data.type === 'audio_transport_stats') {
           const stats = {};
-          for (const key of ['received', 'forwarded', 'late', 'duplicates', 'reordered', 'missing', 'pending']) {
+          for (const key of ['received', 'forwarded', 'late', 'stale', 'duplicates', 'reordered', 'recovered', 'missing', 'pending', 'wait_ms', 'unrecovered', 'untracked_missing', 'after_stop', 'max_reorder_wait_ms']) {
             if (Number.isSafeInteger(data.stats?.[key]) && data.stats[key] >= 0) stats[key] = data.stats[key];
           }
-          trace.event('audio.udp_stats', stats);
+          inputDiagnostics.transport(stats);
         } else if (data.type === 'abort') {
           reminderInputOpen = false;
           trace.event('device.abort', { speaking: isSpeaking, playback_queue: audioOutputQueue.length });
@@ -2152,6 +2156,7 @@ wssXiaozhi.on('connection', (ws, req) => {
     trace.event('session.teardown', { reason: finishReason || 'device_disconnected', metrics });
     sessionClosed = true;
     clearInterval(traceInterval);
+    inputDiagnostics.stop();
     deviceHeartbeat?.stop();
     audioInput.stop();
     resumptionState = null;

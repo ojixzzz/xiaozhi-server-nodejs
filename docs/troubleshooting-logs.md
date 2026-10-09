@@ -90,7 +90,8 @@ dengan log jadwal dan pengiriman di agent; lihat
 | `gemini.audio_stream_ended` / `audio.input_ended` | Akhir audio telah dikirim setelah antrean mikrofon selesai, melalui `listen.stop` atau jeda stream 1,2 detik |
 | `gemini.resumption_updated` / `gemini.go_away` | Checkpoint pemulihan tersedia atau Gemini meminta pergantian koneksi; token checkpoint tidak dicatat |
 | `provider.resumption_rejected` | Checkpoint ditolak saat setup; percobaan berikutnya memakai sesi baru |
-| `audio.udp_stats` / `audio.input_gap` | Paket UDP diterima, diurutkan, terlambat/duplikat, hilang, atau celah audio yang diisi keheningan |
+| `audio.input_summary` | Ringkasan celah audio dan statistik UDP tiap 5 detik selama ada aktivitas; menggantikan `audio.udp_stats` |
+| `audio.input_gap` | Detail setiap celah, hanya pada `LOG_LEVEL=debug`; jumlah frame terlambat melewati batas tunggu dan frame yang diganti keheningan |
 | `audio.downlink_blocked` / `audio.downlink_recovered` | Antrean WebSocket keluar penuh lalu pulih; audio tidak terus ditambahkan ke socket yang macet |
 | `audio.downlink_overflow` | Antrean suara mencapai batas; sesi ditutup dengan alasan `audio_backpressure` |
 | `audio.first_packet` / `audio.activity_detected` | Audio perangkat masuk / energi audio melewati ambang adaptif; bukan bukti ucapan berhasil dipahami. Versi lama memakai nama `audio.speech_detected` |
@@ -119,6 +120,53 @@ selesai; `socket_buffered_bytes` menunjukkan data yang menunggu dikirim ke peer
 WebSocket. Pada MQTT, peer tersebut adalah gateway, bukan speaker perangkat.
 Ringkasan audio tidak menulis rekaman/base64, dan deteksi
 suara dibatasi satu log per 10 detik agar tidak menumpuk setiap paket.
+
+## Koneksi audio MQTT/UDP tidak stabil
+
+Gateway menunggu paket yang tidak urut dengan batas adaptif **120 → 240 → 360 ms**.
+Batas naik saat terjadi celah atau paket pengisi celah hampir terlambat, maksimal
+satu kenaikan per detik. Setelah aliran stabil selama 10 detik dan setidaknya
+32 paket berurutan diterima, batas turun satu langkah. Paket yang sudah urut
+langsung diteruskan. Pengaturan ini otomatis, tanpa mengubah dashboard.
+
+Saat perangkat mengirim `listen.stop`, gateway menunggu audio terakhir sesuai
+batas tersebut, maksimal 360 ms sejak permintaan stop pertama. Setelah itu,
+antrean diteruskan sebelum akhir ucapan dikirim ke relay. `listen.start` baru
+membatalkan stop yang masih tertunda; penutupan sesi membersihkan kedua timer.
+
+Pada level log biasa, celah dirangkum dalam `audio.input_summary` tiap 5 detik,
+bukan satu peringatan untuk setiap paket. Ringkasan terakhir juga ditulis saat
+sesi berakhir jika masih ada data yang belum dilaporkan. Jendela tanpa aktivitas
+tidak menghasilkan ringkasan. Gunakan field berikut untuk membaca kondisinya:
+
+| Field | Cara membaca |
+| --- | --- |
+| `missing_frames` / `missing_audio_ms` | Jumlah frame yang melewati batas tunggu dan durasi audio terkait dalam jendela ringkasan |
+| `concealed_frames` / `concealed_audio_ms` | Bagian celah yang diganti keheningan; maksimal 5 frame per celah agar antrean tidak membengkak |
+| `udp.wait_ms` | Batas tunggu saat statistik gateway diambil: 120, 240, atau 360 ms |
+| `udp.missing` | Total frame yang melewati batas tunggu selama sesi, termasuk yang kemudian datang terlambat |
+| `udp.late` | Paket unik yang akhirnya datang setelah celahnya sudah dilewati; tidak diputar ulang |
+| `udp.unrecovered` | `missing - late`: frame yang belum terlihat kembali dalam riwayat pelacakan, bukan bukti semuanya hilang permanen |
+| `udp.reordered` / `udp.recovered` | Paket datang tidak sesuai urutan / paket pengisi celah yang berhasil diterima sebelum celah dilewati |
+| `udp.duplicates` | Paket yang sudah pernah diterima dan masih dikenali oleh riwayat pelacakan |
+| `udp.after_stop` | Paket datang setelah akhir ucapan selesai diproses; terpisah dari `late` |
+| `udp_delta` / `udp_age_ms` | Perubahan sejak statistik sebelumnya dilaporkan / umur statistik terakhir dari gateway |
+
+Field di dalam `udp` bersifat kumulatif selama sesi, sedangkan field celah di
+luarnya dihitung per jendela. Statistik gateway dikirim tiap 5 detik, sehingga
+waktu pembaruannya tidak selalu persis sama dengan ringkasan relay. Riwayat
+dibatasi 512 paket yang sudah diterima dan 128 rentang celah: paket lama yang
+sudah tidak dapat diklasifikasikan masuk `udp.stale`, dan celah yang keluar dari
+pelacakan dihitung pada `udp.untracked_missing`. `udp.max_reorder_wait_ms`+mencatat waktu tunggu terlama untuk paket pengisi celah yang berhasil diterima.
+
+Contoh: `udp.missing=10`, `udp.late=8`, `udp.unrecovered=2` berarti delapan dari
+sepuluh frame ternyata datang terlambat. Audio delapan frame itu tetap sudah
+terlewat; buffer adaptif membantu mengurangi kejadian berikutnya. Jika celah
+terus tinggi pada batas 360 ms, periksa Wi-Fi perangkat, jalur UDP, dan beban
+gateway. Buffer tidak dapat mengembalikan data suara yang tidak sampai.
+
+Untuk memakai perilaku ini, perbarui **relay XiaoZhi dan gateway** ke versi yang
+sama. Gateway lama masih memakai batas tetap dan statistik yang lebih terbatas.
 
 ## Saat diam tetapi timer standby terus direset
 
@@ -232,6 +280,19 @@ a pong, independent of speech standby (`0` disables only speech standby).
 `heartbeat.last_pong_age_ms` measures network liveness; MQTT device liveness is
 checked separately by the gateway. Once teardown completes, session status
 logging, provider connections and per-session timers stop.
+MQTT/UDP reordering now uses an adaptive 120–360 ms deadline; contiguous audio
+is forwarded immediately. Each ten stable seconds with at least 32 contiguous
+arrivals lowers the deadline one step. Pending `listen.stop` follows that
+deadline, capped at 360 ms from the first stop, and drains audio before ending
+the stream. Update both relay and gateway for this behavior.
+`audio.input_summary` aggregates gaps every 5 seconds; individual
+`audio.input_gap` events require `LOG_LEVEL=debug`. `udp.missing` counts deadline
+misses, `udp.late` counts unique later arrivals, and `udp.unrecovered` is their
+difference, subject to bounded history. These are not proof of permanent packet
+loss. `udp_delta` contains changes since the previous reported snapshot and
+`udp_age_ms` gives its age. The relay inserts at most five silent frames per gap;
+missing-frame counters still report the full gap. All summary timers stop at
+teardown, with one final partial summary if needed.
 `provider.closed` includes close code/reason and pending work. `session.status`
 reports idle state and audio counters every 15 seconds. Lifecycle tracing is
 enabled at `LOG_LEVEL=info`; `debug` adds control events and transcript character

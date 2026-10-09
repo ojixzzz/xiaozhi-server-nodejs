@@ -172,7 +172,7 @@ class Gateway extends EventEmitter {
     if (Date.now() - session.udpRateWindow >= 1000) { session.udpRateWindow = Date.now(); session.udpRateCount = 0; }
     if (++session.udpRateCount > 200) return;
     const sequence = message.readUInt32BE(12);
-    if (session.inputStopped) { session.jitter.stats.late++; return; }
+    if (session.inputStopped) { session.jitter.stats.after_stop++; return; }
     const cipher = crypto.createDecipheriv('aes-128-ctr', session.key, message.subarray(0, 16));
     const opus = Buffer.concat([cipher.update(message.subarray(16)), cipher.final()]);
     if (!session.jitter.push(sequence, opus) || session.peer.session !== session) return;
@@ -261,21 +261,17 @@ class Peer {
     if (json.session_id && json.session_id !== this.session.sessionId) return;
     if (json.type === 'mcp' && !object(json.payload)) return;
     if (json.type === 'listen' && json.state === 'stop') {
-      // MQTT control may overtake the last UDP audio packets. Drain the small
-      // reorder window before forwarding the end-of-utterance signal.
       const session = this.session;
-      clearTimeout(session.listenStopTimer);
-      session.listenStopTimer = setTimeout(() => {
+      if (session.inputStopped) return;
+      session.jitter.requestEnd(() => {
         if (this.session !== session) return;
-        session.jitter.flush();
         session.inputStopped = true;
         this.sendUpstream(JSON.stringify(json), false);
-      }, 120);
-      session.listenStopTimer.unref();
+      });
       session.lastActivity = Date.now(); return;
     }
     if (json.type === 'listen' && json.state === 'start') {
-      clearTimeout(this.session.listenStopTimer);
+      this.session.jitter.cancelEnd();
       this.session.inputStopped = false;
     }
     this.session.lastActivity = Date.now(); this.sendUpstream(JSON.stringify(json), false);
@@ -297,7 +293,7 @@ class Peer {
         if (this.session === session && this.sendUpstream(opus, true)) session.remoteSequence = sequence;
       },
       onGap: frames => {
-        if (this.session === session) this.sendUpstream(JSON.stringify({ type: 'audio_gap', frames: Math.min(frames, 5),
+        if (this.session === session) this.sendUpstream(JSON.stringify({ type: 'audio_gap', frames,
           frame_duration: session.inputDuration }), false);
       }
     });
@@ -383,7 +379,7 @@ class Peer {
     if (!session || expected !== session) return;
     this.server.emit('audioStats', { device_id: this.identity.deviceId, session_id: session.sessionId,
       event: 'audio.udp_session_closed', ...session.jitter.snapshot() });
-    session.jitter.stop(); clearTimeout(session.listenStopTimer);
+    session.jitter.stop();
     this.session = null; this.server.sessions.delete(session.route); clearTimeout(session.helloTimer);
     session.ready = false; session.audioQueue.length = 0; session.controlQueue.length = 0; session.key.fill(0);
     if (notify && session.sessionId && this.connected) void this.send({type: 'goodbye', session_id: session.sessionId});
@@ -395,7 +391,7 @@ class Peer {
       (this.stream.partialSince && now - this.stream.partialSince > o.fragmentTimeout) ||
       (this.connected && now - this.stream.lastPacketAt > (this.keepAlive ? this.keepAlive * 1500 : o.maxNoKeepAliveIdle))) { this.close(); return; }
     const session = this.session;
-    if (session?.ready && now - session.lastStatsAt >= 15000) {
+    if (session?.ready && now - session.lastStatsAt >= 5000) {
       session.lastStatsAt = now;
       this.sendUpstream(JSON.stringify({ type: 'audio_transport_stats', stats: session.jitter.snapshot() }), false);
     }

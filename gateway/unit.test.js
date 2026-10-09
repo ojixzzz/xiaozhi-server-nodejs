@@ -167,6 +167,51 @@ test('real AES-CTR UDP/raw Opus bridge, replay filtering, controls and goodbye p
   f.ws().close(); await device.message('goodbye'); assert.equal(f.gateway.connections.size, 1);
 });
 
+test('MQTT stop drains adaptive UDP audio, preserves full gap counts and cancels timers on restart/close', async (t) => {
+  const f = await fixture(t); const device = await f.device(); await device.frame(2); device.publish(hello);
+  const reply = await device.message('hello');
+  const session = [...f.gateway.sessions.values()][0], peer = session.peer;
+  let time = 0, id = 0;
+  const timers = new Map(), sent = [];
+  Object.assign(session.jitter, { now: () => time,
+    setTimer: (fn, ms) => { const key = ++id; timers.set(key, {fn, at: time + ms}); return key; },
+    clearTimer: key => timers.delete(key) });
+  peer.sendUpstream = (data, binary) => { sent.push(binary ? {type: 'audio'} : JSON.parse(data)); return true; };
+  const advance = ms => {
+    const end = time + ms;
+    while (true) {
+      const next = [...timers.entries()].filter(([, timer]) => timer.at <= end).sort((a, b) => a[1].at - b[1].at)[0];
+      if (!next) break;
+      time = next[1].at; timers.delete(next[0]); next[1].fn();
+    }
+    time = end;
+  };
+  const control = state => peer.handle(0x30, Buffer.concat([string('device-server'),
+    Buffer.from(JSON.stringify({type: 'listen', state, session_id: reply.session_id}))]));
+  const audio = sequence => {
+    const opus = Buffer.from([0xf8, 0xff, 0xfe]), header = Buffer.from(reply.udp.nonce, 'hex');
+    header.writeUInt16BE(opus.length, 2); header.writeUInt32BE(sequence, 12);
+    const cipher = crypto.createCipheriv('aes-128-ctr', session.key, header);
+    f.gateway.receiveUdp(Buffer.concat([header, cipher.update(opus), cipher.final()]), {address: '127.0.0.1', port: 12345});
+  };
+  audio(1); audio(8); advance(10); await control('stop');
+  advance(110); assert.equal(session.jitter.waitMs, 240);
+  assert.deepEqual(sent.find(value => value.type === 'audio_gap'), {type: 'audio_gap', frames: 6, frame_duration: 60});
+  advance(80); audio(9); await control('stop');
+  advance(49); assert.equal(sent.some(value => value.state === 'stop'), false);
+  advance(1); assert.equal(session.inputStopped, true); assert.equal(sent.at(-1).state, 'stop');
+  assert.equal(sent.filter(value => value.type === 'audio').length, 3);
+  audio(10); assert.equal(session.jitter.stats.after_stop, 1); assert.equal(session.jitter.stats.late, 0);
+  session.lastStatsAt = Date.now() - 5001; peer.tick();
+  const stats = sent.find(value => value.type === 'audio_transport_stats').stats;
+  assert.equal(stats.missing, 6); assert.equal(stats.wait_ms, 240); assert.equal(stats.after_stop, 1);
+  await control('start'); await control('stop'); advance(50); await control('start'); advance(400);
+  assert.equal(session.inputStopped, false); assert.equal(sent.filter(value => value.state === 'stop').length, 1);
+  audio(12); await control('stop'); assert.equal(timers.size, 2);
+  peer.endSession(false); const count = sent.length; advance(1000);
+  assert.equal(timers.size, 0); assert.equal(sent.length, count); assert.equal(f.gateway.sessions.size, 0);
+});
+
 test('malformed remaining length, oversized frame, wrong topic and stalled handshake close cleanly', async (t) => {
   const f = await fixture(t, {connectTimeout: 200, fragmentTimeout: 200});
   for (const bytes of [Buffer.from([0x10, 255, 255, 255, 255]), Buffer.from([0x10, 255, 255, 1])]) {

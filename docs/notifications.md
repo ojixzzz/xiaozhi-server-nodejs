@@ -73,6 +73,15 @@ notification uses only the already-connected MQTT control channel. The device
 downloads its audio directly from the configured HTTP(S) audio origin; sending a
 notification does not open the microphone or start a provider session.
 
+For unstable UDP input, the gateway automatically adjusts its reorder deadline
+from 120 to 240 to 360 ms, then reduces it as traffic stabilizes. In-order packets
+are forwarded immediately. End-of-speech control waits for trailing audio using
+the same bounded deadline. The relay logs one `audio.input_summary` per active
+5-second window instead of warning for each gap; per-gap details remain at
+`LOG_LEVEL=debug`. Update both gateway and relay to use this behavior. See the
+[audio diagnostics guide](troubleshooting-logs.md#koneksi-audio-mqttudp-tidak-stabil)
+for the distinction between missed deadlines, late arrivals, and unresolved gaps.
+
 This gateway implements the Xiaozhi-specific control/audio path. It is not a
 general-purpose MQTT broker or a retained-message queue.
 Its firmware-compatible UDP AES-CTR format lacks authenticated integrity and
