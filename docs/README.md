@@ -12,6 +12,7 @@ berubah bahasa. Bahasa percakapan mengikuti pengaturan dan permintaan Anda.
 | Panduan | Isi | Bahasa |
 | --- | --- | --- |
 | [Panduan pengguna](panduan-pengguna.md) | Dashboard, memori, notifikasi, balasan, dan masalah umum | Indonesia |
+| [Pengingat internal](reminders.md) / [English](reminders.en.md) | Jadwal, tunda/selesai, jam tenang, dan dashboard | Indonesia / English |
 | [Hubungkan agent](remote-mcp.md) / [English](remote-mcp.en.md) | Konfigurasi siap salin dan MCP dua arah | Indonesia / Inggris |
 | [Pasang server](SETUP_ID.md) | Instalasi bertahap, pengaturan perangkat, dan kembali ke konfigurasi lama | Indonesia |
 | [Docker dan penyimpanan](docker.md) | Menjalankan, memakai image GHCR, memperbarui, dan mencadangkan server | Ringkasan Indonesia, referensi Inggris |

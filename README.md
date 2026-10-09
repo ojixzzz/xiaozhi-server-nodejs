@@ -31,10 +31,13 @@ berbeda. Memiliki adapter tidak menjamin model tersedia pada akun provider Anda.
 
 - **Percakapan suara:** berbicara dengan AI melalui perangkat XiaoZhi.
 - **Dashboard:** menyetujui perangkat, memilih AI, serta mengelola memori dan inbox.
+- **Pengingat internal:** jadwal harian, mingguan, bulanan, interval, dan tanggal tertentu;
+  tunda/selesai lewat suara, kelola di dashboard, serta jam tenang untuk semua inbox.
+  Lihat [panduan pengingat](docs/reminders.md).
 - **Memori opsional:** menyimpan percakapan Gemini yang selesai dan catatan yang
   Anda masukkan. Awalnya nonaktif; memori dibagi oleh semua pengguna perangkat itu.
 - **Inbox notifikasi:** menyimpan pesan dari agent, termasuk ketika perangkat offline.
-- **Pengingat:** beep dicoba setiap 60 detik selama masih ada pesan belum dibaca.
+- **Beep berulang:** dicoba setiap 60 detik selama masih ada pesan belum dibaca.
   Pengingat ditunda ketika perangkat sedang digunakan untuk percakapan.
 - **MCP dua arah:** agent mengirim pesan ke inbox; XiaoZhi memanggil tools agent
   untuk menjalankan permintaan atau mengirim balasan.

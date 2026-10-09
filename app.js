@@ -36,6 +36,8 @@ const { parseDeviceTimezoneOffset, deviceServerTime } = require('./lib/device-ti
 const { NotificationInbox } = require('./lib/inbox');
 const { createNotificationIngress, publicError: notificationPublicError } = require('./lib/notification-ingress');
 const { INBOX_TOOLS, INBOX_INSTRUCTION, canUseInboxTools, isInboxToolCall, createInboxTools } = require('./lib/inbox-tools');
+const { createReminderService, mountReminderRoutes } = require('./lib/reminders');
+const { REMINDER_TOOLS, REMINDER_INSTRUCTION, REMINDER_TOOL_NAMES, createReminderTools } = require('./lib/reminder-tools');
 const { createInboxAnnouncement } = require('./lib/inbox-announcement');
 const { createNotificationReminders } = require('./lib/notification-reminders');
 const { RemoteMcpServers, REMOTE_MCP_INSTRUCTION } = require('./lib/remote-mcp');
@@ -424,19 +426,33 @@ function canSendReminder(deviceId) {
 }
 async function sendInboxBeep(deviceId, notification, attempt = {}) {
   try {
+    if (!canSendReminder(deviceId)) return {status:'not_published',reason:'device_offline_or_busy',playback:'unknown'};
+    const eligibility = await notificationInbox.reminders(deviceId, 'can_beep', { notification_id: notification.id }, DEVICE_TIMEZONE_OFFSET_MINUTES);
+    if (!eligibility.allowed) return {status:'not_published',reason:eligibility.reason,playback:'unknown'};
     const asset = await notificationAudio.issue(process.env.NOTIFY_BEEP_ASSET || 'sample-chime.ogg');
+    // Approval, read state or session activity may change while issuing a URL.
+    const current = await notificationInbox.get(deviceId, notification.id);
+    if (!current || current.readAt !== null || !canSendReminder(deviceId)) {
+      return {status:'not_published',reason:'reminder_cancelled',playback:'unknown'};
+    }
+    const recheck = await notificationInbox.reminders(deviceId, 'can_beep', { notification_id: notification.id }, DEVICE_TIMEZONE_OFFSET_MINUTES);
+    if (!recheck.allowed) return {status:'not_published',reason:recheck.reason,playback:'unknown'};
     if (attempt.reminder) {
-      // Approval, read state or session activity may change while issuing a URL.
-      const current = await notificationInbox.get(deviceId, notification.id);
-      if (!current || current.readAt !== null || !canSendReminder(deviceId)) {
-        return {status:'not_published',reason:'reminder_cancelled',playback:'unknown'};
-      }
+      const claim = await notificationInbox.reminders(deviceId, 'claim_beep', { notification_id: notification.id,
+        interval_ms: Math.max(1000, reminderIntervalMs) }, DEVICE_TIMEZONE_OFFSET_MINUTES);
+      if (!claim.allowed) return {status:'not_published',reason:claim.reason,playback:'unknown'};
     }
     // Each deliberate reminder has a fresh key; no notification text enters audio.
     const idempotencyKey = attempt.attemptId ? `inbox-retry-${notification.id}-${crypto.createHash('sha256').update(attempt.attemptId).digest('hex').slice(0,32)}` : `inbox-${notification.id}`;
     return await notifications.send(deviceId,{audio_url:asset.audio_url,idempotencyKey});
   } catch { return {status:'not_published',reason:'beep_unavailable',playback:'unknown'}; }
 }
+const reminderService = createReminderService({ inbox: notificationInbox, defaultOffset: DEVICE_TIMEZONE_OFFSET_MINUTES,
+  deviceIds: () => Object.keys(devices),
+  allowed: id => devices[id]?.status === 'approved' && hasDedicatedDeviceToken(id),
+  beep: sendInboxBeep,
+  onEvent: (event, fields) => logger.info('Reminder lifecycle:', { event, ...fields })
+});
 const notificationIngress = createNotificationIngress({
   env:process.env,
   inbox:notificationInbox,
@@ -469,6 +485,7 @@ const notificationReminders = createNotificationReminders({
   onError:()=>logger.warn('Notification reminder attempt failed; will check again later.')
 });
 notificationReminders.start();
+reminderService.start();
 app.use(notificationIngress);
 app.use(bodyParser.json({ limit: '32kb' }));
 app.use(session({
@@ -618,6 +635,7 @@ app.post('/api/devices/:mac/inbox/:id/read', requireAuth, featureDevice, async(r
   try {const item=await notificationInbox.markRead(req.params.mac,req.params.id);if(!item)return res.status(404).json({error:'Notification not found'});res.json(item);}
   catch {res.status(503).json({error:'Notification inbox unavailable'});}
 });
+mountReminderRoutes(app, { requireAuth, featureDevice, service: reminderService });
 app.get('/api/devices/:mac/memory', requireAuth, featureDevice, async (req, res) => {
   try { res.json(memoryView(await memoryStore.get(req.params.mac))); }
   catch { res.status(503).json({ error: 'Memory storage unavailable' }); }
@@ -835,9 +853,9 @@ app.get('/api/mcp_devices', requireAuth, (req, res) => {
   // Inject the built-in dashboard pseudo-device
   response[BUILTIN_MCP_ID] = {
     status: 'approved',
-    name: 'Parrot Dashboard (Built-in)',
+    name: 'Server internal · Dashboard & Pengingat',
     connected: true,
-    tools: builtinTools.map(t => ({
+    tools: [...builtinTools, ...REMINDER_TOOLS].map(t => ({
       name: t.name,
       description: t.description,
       inputSchema: t.parameters
@@ -1191,6 +1209,18 @@ wssXiaozhi.on('connection', (ws, req) => {
   let ttsTextQueue = [];
   let finishReason = null;
   let lastSpeechLogAt = 0;
+  let reminderRequestSequence = 0;
+  let reminderInputOpen = false;
+  const runReminderTool = createReminderTools({ service: reminderService, deviceId: macAddress,
+    requestScope: () => {
+      // A tool can arrive before its delayed input transcript. Give both the
+      // same request scope, including when a provider reconnects mid-request.
+      if (!reminderInputOpen) { reminderInputOpen = true; reminderRequestSequence++; }
+      return `${sessionId}:${reminderRequestSequence}`;
+    },
+    allowed: () => !sessionClosed && devices[macAddress]?.status === 'approved' && hasDedicatedDeviceToken(macAddress),
+    maxChars: inboxToolMaxChars
+  });
   const metrics = { input_packets: 0, pcm_frames: 0, speech_frames: 0, provider_audio_chunks: 0,
     playback_packets: 0, buffer_dropped: 0, input_gap_frames: 0, playback_underruns: 0, turns: 0, tool_calls: 0 };
   const audioInput = new PacedAudioInput({
@@ -1426,6 +1456,7 @@ wssXiaozhi.on('connection', (ws, req) => {
       }
       if(canUseInboxTools(sessionBackend,hasDedicatedDeviceToken(macAddress))) {
         for(const tool of INBOX_TOOLS) toolsMap.set(tool.name,tool);
+        for(const tool of REMINDER_TOOLS) toolsMap.set(tool.name,tool);
       }
       const mcpTools = Array.from(toolsMap.values());
       const activeBackend = deviceConfig.llm_backend || LLM_BACKEND;
@@ -1434,6 +1465,7 @@ wssXiaozhi.on('connection', (ws, req) => {
       config.prompt = deviceConfig.prompt;
       if (remoteToolRoutes.size || endpointToolRoutes.size) config.prompt=(config.prompt || 'You are a helpful assistant. Keep responses short.')+'\n'+REMOTE_MCP_INSTRUCTION;
       if(canUseInboxTools(activeBackend,hasDedicatedDeviceToken(macAddress))) config.prompt=(config.prompt || 'You are a helpful assistant. Keep responses short.')+'\n'+INBOX_INSTRUCTION;
+      if(canUseInboxTools(activeBackend,hasDedicatedDeviceToken(macAddress))) config.prompt+='\n'+REMINDER_INSTRUCTION;
       config.input_transcription = deviceConfig.input_transcription;
       config.output_transcription = deviceConfig.output_transcription;
       if (canUseInboxTools(activeBackend,hasDedicatedDeviceToken(macAddress))) {
@@ -1600,6 +1632,7 @@ wssXiaozhi.on('connection', (ws, req) => {
 
       newProvider.on('input_transcription', (text) => {
           if (!isCurrentProvider()) return;
+          if (typeof text === 'string' && text.trim() && !reminderInputOpen) { reminderInputOpen = true; reminderRequestSequence++; }
           if (typeof text === 'string' && text.trim()) { voiceIdle.activity(); trace.event('transcription.input', { attempt, chars: text.length }, 'debug'); }
           inboxAnnouncement?.addInput(text);
           memoryTurns?.addInput(text);
@@ -1627,6 +1660,7 @@ wssXiaozhi.on('connection', (ws, req) => {
 
       newProvider.on('turn_complete', () => {
           if (!isCurrentProvider()) return;
+          reminderInputOpen = false;
           writeOutputAudio(Buffer.alloc(0), true);
           metrics.turns++;
           trace.event('provider.turn_complete', { attempt, turn: metrics.turns, playback_queue: audioOutputQueue.length });
@@ -1678,9 +1712,23 @@ wssXiaozhi.on('connection', (ws, req) => {
           pendingToolCalls.set(callId, { started: performance.now() });
           trace.event('tool.requested', { attempt, call_id: callId, tool: name,
             source_tool: endpointToolRoutes.get(name)?.name || remoteToolRoutes.get(name)?.name || name,
-            route: endpointToolRoutes.has(name) ? 'endpoint' : remoteToolRoutes.has(name) ? 'remote_http' : name.startsWith('notifications_') ? 'inbox' : 'device_or_builtin' });
+            route: REMINDER_TOOL_NAMES.has(name) ? 'reminder' : endpointToolRoutes.has(name) ? 'endpoint' : remoteToolRoutes.has(name) ? 'remote_http' : name.startsWith('notifications_') ? 'inbox' : 'device_or_builtin' });
           voiceIdle.hold(`tool:${callId}`);
           voiceIdle.hold('response');
+          if (REMINDER_TOOL_NAMES.has(name)) {
+            if (!canUseInboxTools(activeBackend, hasDedicatedDeviceToken(macAddress))) {
+              newProvider.sendToolResponse(callId, name, JSON.stringify({error:'Reminder tools unavailable'})); return;
+            }
+            runReminderTool(name, args).then(result => {
+              if (isCurrentProvider()) newProvider.sendToolResponse(callId, name, JSON.stringify(result));
+            }).catch(error => {
+              if (isCurrentProvider()) {
+                trace.event('tool.error', { attempt, call_id: callId, tool: name, code: error.code }, 'warn');
+                newProvider.sendToolResponse(callId, name, JSON.stringify({error: error.code === 'INBOX_CORRUPT' ? 'Reminder storage unavailable; do not retry automatically' : error.message}));
+              }
+            });
+            return;
+          }
           const endpointRoute = endpointToolRoutes.get(name);
           if (endpointRoute) {
             if (!devices[macAddress]?.enabled_mcp_devices?.includes(endpointRoute.connectionId)) {
@@ -2031,6 +2079,7 @@ wssXiaozhi.on('connection', (ws, req) => {
           }
           trace.event('audio.udp_stats', stats);
         } else if (data.type === 'abort') {
+          reminderInputOpen = false;
           trace.event('device.abort', { speaking: isSpeaking, playback_queue: audioOutputQueue.length });
           voiceIdle.release('response');
           voiceIdle.release('playback');
@@ -2155,6 +2204,7 @@ async function shutdown() {
   for (const ws of wssMcpEndpoint.clients) ws.terminate();
   await watcher.close();
   await notificationReminders.close();
+  await reminderService.close();
   await endpointMcp?.close();
   await remoteMcp?.close();
   try { await Promise.all([memoryStore.close(),notificationInbox.close()]); }

@@ -32,6 +32,13 @@ Menu mengikuti teks dashboard yang tersedia. Mengubah pengaturan tertentu akan
 menutup percakapan aktif agar pengaturan baru dimuat. Buka percakapan lagi
 setelah selesai menyimpan.
 
+## Membuat dan mengelola pengingat
+
+Untuk membuat pengingat melalui suara atau dashboard, lihat
+[Pengingat internal](reminders.md). Tidak perlu agent eksternal. Jadwal harian,
+hari tertentu, tanggal, bulanan, dan interval dapat ditunda atau ditandai selesai.
+Jam tenang pada panel Pengingat berlaku untuk semua beep inbox.
+
 ## Otomatis kembali standby setelah diam
 
 Setelah pengguna diam, perangkat otomatis meninggalkan sesi **Mendengarkan**

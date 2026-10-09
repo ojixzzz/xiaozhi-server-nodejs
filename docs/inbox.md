@@ -38,6 +38,13 @@ The application uses `DATA_DIR/notifications.sqlite`, separately from
 `memory.sqlite`. Node.js 24+ native SQLite runs only inside an asynchronous worker
 thread. No SQLite or filesystem call is placed on the audio event loop.
 
+Schema 2 adds [internal reminders](reminders.en.md) in the same database so due
+occurrences, inbox messages and schedule advancement commit atomically. Schema-1
+inboxes migrate transactionally and retain existing messages. Back up the stopped
+server's data volume before deployment; older versions cannot open schema 2.
+Reminder pause/snooze/completion suppress the associated chimes. Device quiet
+hours suppress all inbox chimes while storage and requested retrieval continue.
+
 The storage library defaults and hard bounds are:
 
 | Setting | Default / bound |

@@ -408,6 +408,7 @@
         } else {
             clearAgentSetup();
             closeMemoryNotifyModal();
+            window.XiaozhiReminders?.clear();
             notificationAttempts.clear();
             inboxMessageAttempts.clear();
             inboxBeepAttempts.clear();
@@ -437,6 +438,7 @@
     }
 
     async function logout() {
+        window.XiaozhiReminders?.clear();
         clearAgentSetup();
         closeRemoteMcpForm();
         closeMemoryNotifyModal();
@@ -647,6 +649,10 @@
                 tdActions.appendChild(btnConfig);
 
                 if (data.status === 'approved') {
+                    const btnReminders = document.createElement('button');
+                    btnReminders.textContent = 'Pengingat';
+                    btnReminders.addEventListener('click', () => window.XiaozhiReminders.open(mac));
+                    tdActions.appendChild(btnReminders);
                     const btnMemoryNotify = document.createElement('button');
                     btnMemoryNotify.textContent = 'Memory & Notify';
                     btnMemoryNotify.addEventListener('click', () => openMemoryNotifyModal(mac));
@@ -2081,5 +2087,63 @@
     setInterval(loadData, 5000); // Auto refresh
 </script>
 
+<link rel="stylesheet" href="/reminders.css">
+<div class="modal-overlay hidden" id="reminderModal">
+  <div class="modal reminder-panel" role="dialog" aria-modal="true" aria-labelledby="reminderHeading" tabindex="-1">
+    <h3 id="reminderHeading">Pengingat</h3>
+    <p id="reminderDevice" class="help-text"></p>
+    <p class="help-text">Jadwal berjalan di server walaupun perangkat offline. Dibaca berarti beep berhenti; selesai berarti tugas sudah dikerjakan. Beep memerlukan MQTT.</p>
+    <p id="reminderStatus" role="status" aria-live="polite"></p>
+    <fieldset id="reminderControls">
+      <section aria-label="Pengaturan waktu">
+        <h4>Zona waktu dan jam tenang</h4>
+        <form id="reminderSettingsForm" class="reminder-grid">
+          <label>Offset zona waktu (menit dari UTC)<input id="reminderDefaultOffset" type="number" min="-720" max="840" required></label>
+          <p class="help-text">WIB: 420 · WITA: 480 · WIT: 540. Berlaku untuk jadwal baru; jadwal lama menyimpan zona waktunya sendiri.</p>
+          <label><input id="reminderQuietEnabled" type="checkbox"> Aktifkan jam tenang untuk semua beep inbox</label>
+          <label>Mulai<input id="reminderQuietStart" type="time" value="22:00" required></label>
+          <label>Berakhir<input id="reminderQuietEnd" type="time" value="07:00" required></label>
+          <button type="submit">Simpan pengaturan</button>
+        </form>
+      </section>
+      <section aria-label="Jadwal">
+        <h4>Jadwal tersimpan</h4>
+        <div class="reminder-actions"><select id="reminderFilter" aria-label="Filter jadwal"><option value="all">Semua</option><option value="active">Aktif</option><option value="paused">Dijeda</option><option value="finished">Jadwal berakhir</option><option value="cancelled">Dibatalkan</option></select><button type="button" id="reminderRefresh">Muat ulang</button><button type="button" id="reminderNew">Buat pengingat</button></div>
+        <ul id="reminderList" class="reminder-list"></ul>
+        <div class="reminder-actions"><button type="button" id="reminderPrevious">Sebelumnya</button><span id="reminderPage"></span><button type="button" id="reminderNext">Berikutnya</button></div>
+      </section>
+      <section>
+        <h4 id="reminderFormHeading">Buat pengingat</h4>
+        <form id="reminderForm" class="reminder-grid">
+          <label>Judul (maksimal 120 karakter)<input id="reminderTitle" maxlength="120" required></label>
+          <label>Isi (maksimal 2.000 karakter)<textarea id="reminderText" maxlength="2000"></textarea></label>
+          <label>Jenis<select id="reminderKind"><option value="once">Sekali</option><option value="daily">Setiap hari</option><option value="weekly">Hari tertentu</option><option value="monthly">Tanggal bulanan</option><option value="interval">Interval berulang</option></select></label>
+          <label>Zona waktu jadwal (menit UTC)<input id="reminderOffset" type="number" min="-720" max="840" value="420" required></label>
+          <label data-reminder-kind="once">Waktu pengingat<select id="reminderOnceMode"><option value="after">Beberapa menit lagi</option><option value="at">Tanggal dan jam</option></select></label>
+          <label data-reminder-once="after">Berapa menit lagi?<input id="reminderAfter" type="number" min="1" value="5"></label>
+          <label data-reminder-once="at">Tanggal dan jam lokal<input id="reminderAt" type="datetime-local"></label>
+          <label data-reminder-kind="daily weekly monthly">Jam lokal<input id="reminderTime" type="time" value="08:00"></label>
+          <fieldset data-reminder-kind="weekly"><legend>Hari</legend><div class="reminder-weekdays">
+            <label><input type="checkbox" name="reminderWeekday" value="1">Senin</label><label><input type="checkbox" name="reminderWeekday" value="2">Selasa</label><label><input type="checkbox" name="reminderWeekday" value="3">Rabu</label><label><input type="checkbox" name="reminderWeekday" value="4">Kamis</label><label><input type="checkbox" name="reminderWeekday" value="5">Jumat</label><label><input type="checkbox" name="reminderWeekday" value="6">Sabtu</label><label><input type="checkbox" name="reminderWeekday" value="7">Minggu</label>
+          </div></fieldset>
+          <label data-reminder-kind="monthly">Tanggal (bulan tanpa tanggal ini dilewati)<input id="reminderDay" type="number" min="1" max="31" value="1"></label>
+          <label data-reminder-kind="interval">Setiap berapa menit?<input id="reminderEvery" type="number" min="1" value="120"></label>
+          <label data-reminder-kind="daily weekly monthly interval">Mulai (opsional, jam lokal)<input id="reminderStart" type="datetime-local"></label>
+          <label data-reminder-kind="daily weekly monthly interval">Berakhir (opsional, jam lokal)<input id="reminderEnd" type="datetime-local"></label>
+          <div class="reminder-actions"><button type="submit" id="reminderSave">Simpan pengingat</button><button type="button" id="reminderReset">Batal edit / kosongkan</button></div>
+        </form>
+      </section>
+      <section aria-label="Riwayat kejadian">
+        <h4 id="reminderHistoryHeading">Riwayat kejadian</h4>
+        <p class="help-text">Tunda berlaku untuk satu kejadian, tanpa mengubah jadwal rutin. Jadwal dibaca belum tentu selesai. Riwayat disimpan 30 hari.</p>
+        <button type="button" id="reminderAllHistory">Lihat semua riwayat</button>
+        <ul id="reminderHistory" class="reminder-list"></ul>
+        <div class="reminder-actions"><button type="button" id="reminderHistoryPrevious">Sebelumnya</button><span id="reminderHistoryPage"></span><button type="button" id="reminderHistoryNext">Berikutnya</button></div>
+      </section>
+    </fieldset>
+    <div class="modal-footer"><button type="button" id="reminderClose">Tutup</button></div>
+  </div>
+</div>
+<script src="/reminders.js"></script>
 </body>
 </html>

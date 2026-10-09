@@ -276,6 +276,51 @@ async function fixture(t, options = {}) {
   };
 }
 
+test('internal reminder tools, admin management and all-inbox quiet hours share one durable flow', { timeout: 30000 }, async t => {
+  const f = await fixture(t);
+  const config = await f.selectMqtt(MAC, UUID), device = await f.connect(config);
+  const args = { title: 'Minum', text: 'Minum air', schedule: { kind: 'once', after_seconds: 1 } };
+  const script = await f.openScript(device, [
+    { id: 'create-first', name: 'reminders_create', args },
+    { id: 'create-duplicate', name: 'reminders_create', args },
+    { id: 'list', name: 'reminders_list', args: {} }
+  ]);
+  assert.ok(script.connected.tools.some(tool => tool.name === 'reminders_snooze'));
+  assert.match(script.connected.prompt, /Internal reminder tools/);
+  assert.equal(script.responses[0].data.reminder.id, script.responses[1].data.reminder.id);
+  const reminderId = script.responses[0].data.reminder.id;
+  await until(async () => (await f.request(`/api/devices/${MAC}/reminders/${reminderId}`)).body.occurrences.length === 1, 'scheduled occurrence stored');
+  assert.equal(f.rows().filter(row => row.sender === '@xiaozhi-reminders').length, 1);
+  await f.closeScript(device, script.connected.session);
+
+  const local = new Date(Date.now() + 420 * 60000), minute = local.getUTCHours() * 60 + local.getUTCMinutes();
+  const clock = minutes => `${String(Math.floor(((minutes + 1440) % 1440) / 60)).padStart(2,'0')}:${String(((minutes + 1440) % 1440) % 60).padStart(2,'0')}`;
+  const settings = { quiet_enabled: true, quiet_start: clock(minute - 60), quiet_end: clock(minute + 60) };
+  assert.equal((await f.request(`/api/devices/${MAC}/reminder-settings`, { method: 'PUT', body: JSON.stringify(settings) })).status, 200);
+  const publications = f.beforeForward.length;
+  const composed = await f.compose({ title: 'Quiet admin', text: 'No beep now', idempotency_key: 'quiet-admin' });
+  assert.equal(composed.body.stored, true); assert.equal(composed.body.beep.status, 'not_published');
+  const pairing = await f.request('/api/agent_connections', { method: 'POST', body: JSON.stringify({ name: 'Quiet agent', device_id: MAC, public_url: f.base }) });
+  assert.equal(pairing.status, 201);
+  const external = await f.request('/api/notifications', { method: 'POST', headers: { 'Content-Type': 'application/json', Authorization: pairing.body.mcp_config.mcpServers.xiaozhi.headers.Authorization },
+    body: JSON.stringify({ title: 'Quiet external', text: 'Stored without beep', idempotency_key: 'quiet-agent' }) });
+  assert.equal(external.status, 201); assert.equal(external.body.beep.status, 'not_published');
+  assert.equal((await f.retry(external.body.notification_id)).body.beep.status, 'not_published');
+  assert.equal(f.beforeForward.length, publications);
+
+  const detail = (await f.request(`/api/devices/${MAC}/reminders/${reminderId}`)).body;
+  const occurrence = detail.occurrences[0];
+  assert.equal((await f.request(`/api/devices/${OTHER_MAC}/reminders/${reminderId}`)).status, 404);
+  assert.equal((await f.request(`/api/devices/${SHARED_MAC}/reminders`)).status, 403);
+  assert.equal((await f.request(`/api/devices/${MAC}/reminder-settings`, { method: 'PUT', headers: { Cookie: f.headers.Cookie, 'Content-Type': 'application/json' }, body: '{}' })).status, 403);
+  assert.equal((await f.request(`/api/devices/${MAC}/reminders/occurrences/${occurrence.id}/snooze`, { method: 'POST', body: JSON.stringify({ seconds: 600, request_key: 'dashboard-snooze' }) })).status, 200);
+  assert.equal((await f.request(`/api/devices/${MAC}/reminders/occurrences/${occurrence.id}/complete`, { method: 'POST', body: JSON.stringify({ confirm: true }) })).body.occurrence.state, 'completed');
+  await f.restart();
+  assert.equal((await f.request(`/api/devices/${MAC}/reminder-settings`)).body.quiet_enabled, true);
+  assert.equal((await f.request(`/api/devices/${MAC}/reminders/${reminderId}`)).body.occurrences[0].state, 'completed');
+  assert.equal(f.rows().filter(row => row.sender === '@xiaozhi-reminders').length, 1);
+});
+
 test('speech idle ends voice even with silent Opus traffic, preserving MQTT and inbox notifications', { timeout: 30000 }, async t => {
   // Only shorten the relay's speech timer; gateway idle remains at its normal 2 minutes.
   const f = await fixture(t, { voiceIdleTimeoutMs: 600 });
