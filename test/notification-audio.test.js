@@ -33,7 +33,7 @@ async function consume(stream) {
   return Buffer.concat(chunks);
 }
 
-test('sample is a short, mono Opus chime with 20 ms packets', async t => {
+test('bundled sample is a five-second mono Opus chime with 20 ms packets', async t => {
   const result = spawnSync('ffprobe', ['-v', 'error', '-show_entries',
     'stream=codec_name,channels:format=duration:packet=duration_time', '-of', 'json', sample], { encoding: 'utf8' });
   if (result.error?.code === 'ENOENT') return t.skip('ffprobe is not installed; header checks still run');
@@ -41,7 +41,8 @@ test('sample is a short, mono Opus chime with 20 ms packets', async t => {
   const probe = JSON.parse(result.stdout);
   assert.equal(probe.streams[0].codec_name, 'opus');
   assert.equal(probe.streams[0].channels, 1);
-  assert.ok(Number(probe.format.duration) >= 1 && Number(probe.format.duration) < 1.1);
+  // Ogg duration includes Opus pre-skip; allow less than one extra packet.
+  assert.ok(Number(probe.format.duration) >= 5 && Number(probe.format.duration) < 5.02, `Unexpected sample duration: ${probe.format.duration}`);
   assert.ok(probe.packets.slice(1, -1).every(packet => Number(packet.duration_time) === 0.02));
 });
 

@@ -85,6 +85,7 @@ function browserFixture() {
         };
         else if (url === '/api/devices') data = window.__devices;
         else if (url === '/api/mcp_devices') data = {};
+        else if (url === '/api/agent_connections') data = [];
         else if (url.startsWith('/api/devices/')) {
             const requestUrl = new URL(url, 'https://dashboard.example.test');
             const parts = requestUrl.pathname.split('/');
@@ -92,7 +93,9 @@ function browserFixture() {
             if (parts[4] === 'inbox') {
                 const records = window.__inboxes[mac];
                 const entry = records.find(item => item.id === parts[5]);
-                if (parts[6] === 'read') {
+                if (parts[6] === 'trace') {
+                    data = { events: [], playback_acknowledgement: false };
+                } else if (parts[6] === 'read') {
                     if (window.__inboxReadError) { code = window.__inboxReadError; data = { error: '<b>Read status unavailable</b>' }; }
                     else if (!entry) { code = 404; data = { error: 'Notification not found' }; }
                     else { entry.readAt ??= 1791350100000; data = entry; }
@@ -275,6 +278,7 @@ async function exerciseUi(t, evaluate, waitUntil) {
         assert.equal(await evaluate(`Array.from(document.querySelectorAll('#deviceTableBody button')).filter(b => b.textContent === 'Memory & Notify').length`), 2);
         await evaluate(`openConfigModal('${A}')`);
         assert.equal(await evaluate(`document.getElementById('configMacDisplay').textContent`), A);
+        assert.equal(await evaluate(`document.getElementById('agentSetupPublicUrl').value`), await evaluate(`window.location.origin`));
         assert.equal(await evaluate(`document.getElementById('configVoiceIdleSeconds').value`), '');
         await evaluate(`document.getElementById('configVoiceIdleSeconds').value='1'; saveConfig()`);
         assert.match(await evaluate(`document.getElementById('configStatus').textContent`), /15–3600/);
@@ -848,6 +852,7 @@ test('memory and notification state flows in an isolated DOM simulation', async 
     }
     const context = vm.createContext({
         document: createTestDocument(html), URL, Response, AbortController, TextEncoder,
+        location: new URL('https://dashboard.example.test/'),
         setTimeout, clearTimeout, Event, KeyboardEvent: Event,
         crypto: require('node:crypto').webcrypto
     });

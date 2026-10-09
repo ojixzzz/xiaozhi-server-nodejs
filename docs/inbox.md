@@ -281,6 +281,9 @@ entries, page through previews, open details and explicitly mark a message read.
 **Save message & beep** stores a manual test message with source
 `@dashboard-admin`, using the same durable publisher as external senders and no
 external sender token. **Retry beep only** addresses an existing record and never
-creates another inbox entry or changes its read state. Opening details is read-only.
+creates another inbox entry or changes its read state. An explicitly confirmed retry
+may beep an already-read message while the device is idle; automatic repeats still
+stop on read. Quiet hours and paused/snoozed/completed/cancelled reminder state
+also block manual retries. Opening details is read-only.
 The separate audio-only test does not save text. See
 [the Indonesian setup guide](SETUP_ID.md#7-coba-inbox-lalu-hubungkan-agent).

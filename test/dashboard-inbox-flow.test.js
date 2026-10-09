@@ -870,6 +870,15 @@ test('dashboard-only durable notification inbox supports compose, inspect, ackno
     const again = await f.inbox(MAC, `/${notificationId}/read`, { method: 'POST', body: JSON.stringify({ confirm: true }) });
     assert.equal(again.body.readAt, readAt);
     assert.equal((await f.inbox()).body.unreadCount, 6);
+    const local = new Date(Date.now() + 420 * 60000), minute = local.getUTCHours() * 60 + local.getUTCMinutes();
+    const clock = n => { n = (n + 1440) % 1440; return `${String(Math.floor(n / 60)).padStart(2,'0')}:${String(n % 60).padStart(2,'0')}`; };
+    assert.equal((await f.request(`/api/devices/${MAC}/reminder-settings`, { method: 'PUT', body: JSON.stringify({quiet_enabled:true,quiet_start:clock(minute-60),quiet_end:clock(minute+60)}) })).status, 200);
+    const beforeQuietRetry = f.beforeForward.length;
+    const quietRetry = await f.retry(notificationId);
+    assert.equal(quietRetry.status, 200); assert.equal(quietRetry.body.beep.status, 'not_published');
+    assert.equal(f.beforeForward.length, beforeQuietRetry, 'manual retry of a read message still obeys quiet hours');
+    assert.equal((await f.inbox(MAC, `/${notificationId}`)).body.readAt, readAt);
+    assert.equal((await f.request(`/api/devices/${MAC}/reminder-settings`, { method: 'PUT', body: JSON.stringify({quiet_enabled:false}) })).status, 200);
     await delay(1050);
     const before = f.beforeForward.length;
     const retried = await f.retry(notificationId);

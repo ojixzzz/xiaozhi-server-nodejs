@@ -19,7 +19,7 @@ Bagian Inggris berikut menjelaskan format audio, link sementara, dan konversi
 menggunakan FFmpeg untuk administrator. Perintah konversi bukan langkah wajib
 bila menggunakan sample bawaan.
 
-`sample-chime.ogg` is a generated one-second **two-beep test tone, with no speech**. It is
+`sample-chime.ogg` is a generated five-second **two-beep test tone, with no speech**. It is
 mono Ogg Opus, encoded from 16 kHz PCM using 20 ms Opus frames. It is not a spoken
 reminder or evidence that notification playback works on a physical device.
 Opus decoders/ffprobe normally report a 48 kHz decoding clock even for this input.
@@ -82,7 +82,7 @@ Reproduce the bundled sample locally (no network/API):
 ffmpeg -f lavfi -i 'anullsrc=r=16000:cl=mono' \
   -f lavfi -i 'sine=frequency=880:duration=0.18:sample_rate=16000' \
   -filter_complex '[1:a]volume=0.2,afade=t=in:d=0.01,afade=t=out:st=0.15:d=0.03,asplit=2[a][b];[a]adelay=80[a1];[b]adelay=420[b1];[0:a][a1][b1]amix=inputs=3:duration=first:normalize=0[out]' \
-  -map '[out]' -t 1 -ac 1 -ar 16000 -c:a libopus -b:a 24k -frame_duration 20 \
+  -map '[out]' -t 5 -ac 1 -ar 16000 -c:a libopus -b:a 24k -frame_duration 20 \
   -metadata title='Two notification beeps - no speech' notification-audio/sample-chime.ogg
 ```
 

@@ -185,7 +185,7 @@ working Redis RPC interface, nor require Redis to be installed.
 
 ## Local audio and prerecorded speech
 
-The bundled `notification-audio/sample-chime.ogg` is a one-second **test tone with
+The bundled `notification-audio/sample-chime.ogg` is a five-second **test tone with
 no speech**. In the dashboard choose it under **Local prerecorded audio**, then
 click **Use local audio**. That issues a five-minute download URL without sending
 anything to the device. Review the device, URL and optional subtitle, then click

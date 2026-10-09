@@ -432,9 +432,12 @@ async function sendInboxBeep(deviceId, notification, attempt = {}) {
     const eligibility = await notificationInbox.reminders(deviceId, 'can_beep', { notification_id: notification.id }, DEVICE_TIMEZONE_OFFSET_MINUTES);
     if (!eligibility.allowed) return {status:'not_published',reason:eligibility.reason,playback:'unknown'};
     const asset = await notificationAudio.issue(process.env.NOTIFY_BEEP_ASSET || 'sample-chime.ogg');
+    // Only an explicit admin retry may beep an already-read message.
+    // Automatic repeats still stop on read; quiet hours and reminder state apply to both.
+    const manualRetry = typeof attempt.attemptId === 'string' && !attempt.reminder;
     // Approval, read state or session activity may change while issuing a URL.
     const current = await notificationInbox.get(deviceId, notification.id);
-    if (!current || current.readAt !== null || !canSendReminder(deviceId)) {
+    if (!current || (!manualRetry && current.readAt !== null) || !canSendReminder(deviceId)) {
       return {status:'not_published',reason:'reminder_cancelled',playback:'unknown'};
     }
     const recheck = await notificationInbox.reminders(deviceId, 'can_beep', { notification_id: notification.id }, DEVICE_TIMEZONE_OFFSET_MINUTES);
